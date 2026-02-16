@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.db.models import Count
 from rest_framework import status
 from rest_framework.generics import ListCreateAPIView
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
@@ -14,6 +15,7 @@ from .serializers import ReviewCreateSerializer, ReviewListSerializer
 
 class ReviewListCreateAPIView(ListCreateAPIView):
     queryset = Review.objects.filter(status=Review.Status.VISIBLE).select_related("user", "product").prefetch_related("images")
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -47,7 +49,15 @@ class ReviewListCreateAPIView(ListCreateAPIView):
         return queryset
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+        payload = request.data.copy()
+        files = request.FILES.getlist("images")
+        if files:
+            if hasattr(payload, "setlist"):
+                payload.setlist("images", files)
+            elif isinstance(payload, dict):
+                payload["images"] = files
+
+        serializer = self.get_serializer(data=payload)
         serializer.is_valid(raise_exception=True)
         review = serializer.save()
 
