@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from django.conf import settings
 from django.db.models import Avg, Count
 from django.utils import timezone
@@ -12,6 +10,15 @@ from apps.catalog.models import Product
 from .models import Review, ReviewImage
 
 
+def has_valid_image_file(field_file) -> bool:
+    if not field_file or not getattr(field_file, "name", ""):
+        return False
+    try:
+        return field_file.storage.exists(field_file.name)
+    except Exception:
+        return False
+
+
 class ReviewImageSerializer(serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
 
@@ -20,6 +27,8 @@ class ReviewImageSerializer(serializers.ModelSerializer):
         fields = ("url", "sort_order")
 
     def get_url(self, obj: ReviewImage) -> str:
+        if not has_valid_image_file(obj.image):
+            return ""
         request = self.context.get("request")
         if request:
             return request.build_absolute_uri(obj.image.url)
@@ -72,7 +81,7 @@ class ReviewListSerializer(serializers.ModelSerializer):
         return timezone.localtime(obj.created_at).strftime("%Y.%m.%d")
 
     def get_image(self, obj: Review) -> str:
-        first = obj.images.first()
+        first = next((image for image in obj.images.all() if has_valid_image_file(image.image)), None)
         if not first:
             return ""
         request = self.context.get("request")

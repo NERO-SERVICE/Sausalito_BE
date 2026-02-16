@@ -5,6 +5,7 @@ from .models import (
     HomeBanner,
     Product,
     ProductBadge,
+    ProductDetailImage,
     ProductDetailMeta,
     ProductImage,
     ProductOption,
@@ -26,6 +27,11 @@ class ProductOptionInline(admin.TabularInline):
     extra = 0
 
 
+class ProductDetailImageInline(admin.TabularInline):
+    model = ProductDetailImage
+    extra = 0
+
+
 class ProductDetailMetaInline(admin.StackedInline):
     model = ProductDetailMeta
     extra = 0
@@ -37,6 +43,12 @@ class ProductAdmin(admin.ModelAdmin):
     list_filter = ("is_active",)
     search_fields = ("name", "one_line", "description")
     inlines = [ProductImageInline, ProductBadgeInline, ProductOptionInline, ProductDetailMetaInline]
+
+
+@admin.register(ProductDetailMeta)
+class ProductDetailMetaAdmin(admin.ModelAdmin):
+    list_display = ("id", "product", "shipping_fee", "free_shipping_threshold", "inquiry_count")
+    inlines = [ProductDetailImageInline]
 
 
 @admin.register(Category)

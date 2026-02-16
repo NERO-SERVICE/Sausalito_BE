@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+
+from apps.common.file_utils import review_image_upload_to, validate_image_file
 
 
 class Review(models.Model):
@@ -34,11 +37,28 @@ class Review(models.Model):
 
 class ReviewImage(models.Model):
     review = models.ForeignKey(Review, on_delete=models.CASCADE, related_name="images")
-    image = models.ImageField(upload_to="reviews/%Y/%m/%d")
+    image = models.ImageField(upload_to=review_image_upload_to, validators=[validate_image_file])
     sort_order = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ["sort_order", "id"]
+
+    def clean(self) -> None:
+        if not self.review_id:
+            return
+
+        max_images = getattr(settings, "MAX_REVIEW_IMAGES", 3)
+        existing_count = (
+            ReviewImage.objects.filter(review_id=self.review_id)
+            .exclude(pk=self.pk)
+            .count()
+        )
+        if existing_count >= max_images:
+            raise ValidationError(f"리뷰 이미지는 최대 {max_images}장까지 등록할 수 있습니다.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class ReviewHelpful(models.Model):

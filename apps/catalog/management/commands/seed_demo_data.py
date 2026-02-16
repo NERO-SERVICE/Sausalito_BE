@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import itertools
+import base64
+import shutil
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Avg, Count
@@ -15,6 +19,7 @@ from apps.catalog.models import (
     HomeBanner,
     Product,
     ProductBadge,
+    ProductDetailImage,
     ProductDetailMeta,
     ProductImage,
     ProductOption,
@@ -23,13 +28,16 @@ from apps.reviews.models import Review, ReviewImage
 
 User = get_user_model()
 
+PLACEHOLDER_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+Z4QAAAAASUVORK5CYII="
+)
+
 PRODUCTS = [
     {
         "id": 1,
         "name": "데일리 멀티비타민 밸런스",
         "one_line": "하루 한 정으로 균형 잡힌 비타민 케어",
         "badges": ["베스트셀러", "할인"],
-        "image": "/dist/img/products/dummy1.png",
         "price": 28900,
         "original_price": 36000,
         "rating": 4.9,
@@ -52,7 +60,6 @@ PRODUCTS = [
         "name": "오메가3 퓨어 알티지",
         "one_line": "고순도 오메가3로 혈행과 눈 건강 관리",
         "badges": ["HOT", "할인"],
-        "image": "/dist/img/products/dummy2.png",
         "price": 35900,
         "original_price": 45000,
         "rating": 4.8,
@@ -75,7 +82,6 @@ PRODUCTS = [
         "name": "프로바이오틱스 100억",
         "one_line": "코팅 유산균으로 편안한 장 컨디션",
         "badges": ["베스트셀러"],
-        "image": "/dist/img/products/dummy3.png",
         "price": 24900,
         "original_price": 32000,
         "rating": 4.7,
@@ -98,7 +104,6 @@ PRODUCTS = [
         "name": "콜라겐 글로우 샷",
         "one_line": "저분자 콜라겐 이너뷰티 루틴",
         "badges": ["HOT"],
-        "image": "/dist/img/products/p4.svg",
         "price": 39900,
         "original_price": 49000,
         "rating": 4.8,
@@ -121,7 +126,6 @@ PRODUCTS = [
         "name": "마그네슘 나이트 릴렉스",
         "one_line": "밤 루틴에 맞춘 릴렉스 포뮬러",
         "badges": ["할인"],
-        "image": "/dist/img/products/p5.svg",
         "price": 21900,
         "original_price": 28000,
         "rating": 4.6,
@@ -144,7 +148,6 @@ PRODUCTS = [
         "name": "루테인 맥스 아이케어",
         "one_line": "디지털 피로를 위한 데일리 아이케어",
         "badges": ["할인", "HOT"],
-        "image": "/dist/img/products/p6.svg",
         "price": 32900,
         "original_price": 41000,
         "rating": 4.7,
@@ -187,12 +190,7 @@ PRODUCT_DETAIL_META = {
         ],
         "today_ship_text": "오늘출발 상품 · 오후 2시 이전 결제 시 당일 발송",
         "inquiry_count": 561,
-        "detail_images": [
-            "/dist/img/products/dummy1.png",
-            "/dist/img/products/dummy2.png",
-            "/dist/img/products/dummy3.png",
-            "/dist/img/products/p4.svg",
-        ],
+        "detail_image_count": 4,
     },
     2: {
         "coupon_text": "5% 추가 할인쿠폰",
@@ -213,12 +211,7 @@ PRODUCT_DETAIL_META = {
         ],
         "today_ship_text": "오늘출발 상품 · 오후 3시 이전 결제 시 당일 발송",
         "inquiry_count": 128,
-        "detail_images": [
-            "/dist/img/products/dummy2.png",
-            "/dist/img/products/p6.svg",
-            "/dist/img/products/p5.svg",
-            "/dist/img/products/dummy1.png",
-        ],
+        "detail_image_count": 4,
     },
 }
 
@@ -229,7 +222,6 @@ HOME_BANNERS = [
         "description": "매일 가볍게 시작하는 소살리토 데일리 밸런스 셀렉션",
         "cta_text": "자세히 보기",
         "link_url": "/pages/detail.html?id=1",
-        "image_url": "/dist/img/products/dummy1.png",
     },
     {
         "subtitle": "TRENDING ITEM",
@@ -237,7 +229,6 @@ HOME_BANNERS = [
         "description": "바쁜 일상 속 혈행과 눈 건강을 동시에 챙겨보세요",
         "cta_text": "상품 보러가기",
         "link_url": "/pages/detail.html?id=2",
-        "image_url": "/dist/img/products/dummy2.png",
     },
     {
         "subtitle": "BEST REVIEWED",
@@ -245,7 +236,6 @@ HOME_BANNERS = [
         "description": "재구매가 많은 시그니처 제품들을 지금 만나보세요",
         "cta_text": "베스트 보기",
         "link_url": "#bestReview",
-        "image_url": "/dist/img/products/dummy3.png",
     },
     {
         "subtitle": "NEW ARRIVAL",
@@ -253,7 +243,6 @@ HOME_BANNERS = [
         "description": "신제품으로 나에게 맞는 웰니스 루틴을 업데이트하세요",
         "cta_text": "신제품 보러가기",
         "link_url": "/pages/detail.html?id=4",
-        "image_url": "/dist/img/products/p4.svg",
     },
 ]
 
@@ -281,6 +270,10 @@ BADGE_MAP = {
     "베스트셀러": ProductBadge.BadgeType.BESTSELLER,
     "할인": ProductBadge.BadgeType.DISCOUNT,
 }
+
+
+def make_placeholder_file(name: str) -> ContentFile:
+    return ContentFile(PLACEHOLDER_PNG, name=name)
 
 
 def parse_review_datetime(date_text: str) -> datetime:
@@ -316,9 +309,16 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--reset", action="store_true", help="기존 데이터를 삭제하고 다시 시드합니다.")
+        parser.add_argument(
+            "--with-placeholder-images",
+            action="store_true",
+            help="투명 placeholder 이미지(더미)를 함께 생성합니다.",
+        )
 
     @transaction.atomic
     def handle(self, *args, **options):
+        with_placeholder_images = options["with_placeholder_images"]
+
         if options["reset"]:
             self.stdout.write("기존 데이터를 정리합니다...")
             ReviewImage.objects.all().delete()
@@ -326,10 +326,14 @@ class Command(BaseCommand):
             ProductOption.objects.all().delete()
             ProductBadge.objects.all().delete()
             ProductImage.objects.all().delete()
+            ProductDetailImage.objects.all().delete()
             ProductDetailMeta.objects.all().delete()
             HomeBanner.objects.all().delete()
             Product.objects.all().delete()
             Category.objects.all().delete()
+
+            for folder in ["products", "product-details", "banners", "reviews"]:
+                shutil.rmtree(Path(settings.MEDIA_ROOT) / folder, ignore_errors=True)
 
         category, _ = Category.objects.get_or_create(name="웰니스", slug="wellness")
 
@@ -368,12 +372,13 @@ class Command(BaseCommand):
             product_map[product.id] = product
 
             product.images.all().delete()
-            ProductImage.objects.create(
-                product=product,
-                image_url=row["image"],
-                sort_order=0,
-                is_thumbnail=True,
-            )
+            if with_placeholder_images:
+                ProductImage.objects.create(
+                    product=product,
+                    image=make_placeholder_file(f"product_{product.id}_thumb.png"),
+                    sort_order=0,
+                    is_thumbnail=True,
+                )
 
             product.badges.all().delete()
             for badge_text in row["badges"]:
@@ -384,7 +389,7 @@ class Command(BaseCommand):
             product.options.all().delete()
             detail_meta_input = PRODUCT_DETAIL_META.get(product.id)
             if detail_meta_input:
-                for option_idx, option in enumerate(detail_meta_input.get("options", [])):
+                for option in detail_meta_input.get("options", []):
                     ProductOption.objects.create(
                         product=product,
                         name=option["name"],
@@ -404,14 +409,32 @@ class Command(BaseCommand):
                 "add_ons": [{"id": "gift-card", "name": "메시지 카드", "price": 1000}],
                 "today_ship_text": "오늘출발 상품 · 마감 시간 전 주문 시 당일 발송",
                 "inquiry_count": 24,
-                "detail_images": [],
             }
-            meta_defaults.update({k: v for k, v in (detail_meta_input or {}).items() if k != "options"})
-            ProductDetailMeta.objects.update_or_create(product=product, defaults=meta_defaults)
+            meta_defaults.update({k: v for k, v in (detail_meta_input or {}).items() if k not in {"options", "detail_image_count"}})
+            detail_meta, _ = ProductDetailMeta.objects.update_or_create(product=product, defaults=meta_defaults)
+
+            detail_meta.images.all().delete()
+            detail_image_count = int((detail_meta_input or {}).get("detail_image_count", 0))
+            if with_placeholder_images:
+                for idx in range(detail_image_count):
+                    ProductDetailImage.objects.create(
+                        detail_meta=detail_meta,
+                        image=make_placeholder_file(f"product_{product.id}_detail_{idx + 1}.png"),
+                        sort_order=idx,
+                    )
 
         HomeBanner.objects.all().delete()
         for idx, banner in enumerate(HOME_BANNERS):
-            HomeBanner.objects.create(sort_order=idx, is_active=True, **banner)
+            HomeBanner.objects.create(
+                sort_order=idx,
+                is_active=True,
+                subtitle=banner["subtitle"],
+                title=banner["title"],
+                description=banner["description"],
+                cta_text=banner["cta_text"],
+                link_url=banner["link_url"],
+                image=make_placeholder_file(f"banner_{idx + 1}.png") if with_placeholder_images else None,
+            )
 
         Review.objects.all().delete()
 
@@ -425,7 +448,7 @@ class Command(BaseCommand):
             user, _ = User.objects.get_or_create(
                 email=email,
                 defaults={
-                    "username": f"reviewer_{ord(masked_name[0])}",
+                    "username": f"reviewer_{uuid.uuid4().hex[:8]}",
                     "name": masked_name,
                 },
             )
@@ -450,7 +473,7 @@ class Command(BaseCommand):
             )
         review_rows.extend(generate_bulk_reviews())
 
-        image_counter = itertools.count(1)
+        image_counter = 1
         for row in review_rows:
             product = product_map[row["product_id"]]
             user = get_review_user(row["user"])
@@ -466,13 +489,13 @@ class Command(BaseCommand):
                 updated_at=row["created_at"],
             )
 
-            if row["use_image"]:
-                idx = next(image_counter)
+            if with_placeholder_images and row["use_image"]:
                 ReviewImage.objects.create(
                     review=review,
-                    image=f"reviews/seed/review_{idx}.png",
+                    image=make_placeholder_file(f"review_{image_counter}.png"),
                     sort_order=0,
                 )
+                image_counter += 1
 
         for product in product_map.values():
             summary = product.reviews.filter(status=Review.Status.VISIBLE).aggregate(avg=Avg("score"), cnt=Count("id"))

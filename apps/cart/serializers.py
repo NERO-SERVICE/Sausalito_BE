@@ -32,11 +32,15 @@ class CartItemSerializer(serializers.ModelSerializer):
 
     def get_product(self, obj: CartItem) -> dict:
         image = obj.product.images.filter(is_thumbnail=True).first() or obj.product.images.first()
+        request = self.context.get("request")
+        image_url = ""
+        if image and image.image:
+            image_url = request.build_absolute_uri(image.image.url) if request else image.image.url
         return {
             "id": obj.product.id,
             "name": obj.product.name,
             "price": obj.product.price,
-            "image": image.image_url if image else "",
+            "image": image_url,
         }
 
     def get_option(self, obj: CartItem) -> dict | None:

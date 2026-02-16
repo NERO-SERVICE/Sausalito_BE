@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from django.db import models
 
+from apps.common.file_utils import (
+    banner_image_upload_to,
+    product_detail_image_upload_to,
+    product_image_upload_to,
+    validate_image_file,
+)
+
 
 class Category(models.Model):
     name = models.CharField(max_length=100)
@@ -53,7 +60,12 @@ class Product(models.Model):
 
 class ProductImage(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="images")
-    image_url = models.CharField(max_length=500)
+    image = models.ImageField(
+        upload_to=product_image_upload_to,
+        validators=[validate_image_file],
+        null=True,
+        blank=True,
+    )
     sort_order = models.PositiveIntegerField(default=0)
     is_thumbnail = models.BooleanField(default=False)
 
@@ -100,7 +112,20 @@ class ProductDetailMeta(models.Model):
     add_ons = models.JSONField(default=list, blank=True)
     today_ship_text = models.CharField(max_length=255, blank=True)
     inquiry_count = models.PositiveIntegerField(default=0)
-    detail_images = models.JSONField(default=list, blank=True)
+
+
+class ProductDetailImage(models.Model):
+    detail_meta = models.ForeignKey(ProductDetailMeta, on_delete=models.CASCADE, related_name="images")
+    image = models.ImageField(
+        upload_to=product_detail_image_upload_to,
+        validators=[validate_image_file],
+        null=True,
+        blank=True,
+    )
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
 
 
 class HomeBanner(models.Model):
@@ -108,7 +133,12 @@ class HomeBanner(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     cta_text = models.CharField(max_length=100, blank=True)
-    image_url = models.CharField(max_length=500)
+    image = models.ImageField(
+        upload_to=banner_image_upload_to,
+        validators=[validate_image_file],
+        null=True,
+        blank=True,
+    )
     link_url = models.CharField(max_length=500, blank=True)
     sort_order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)

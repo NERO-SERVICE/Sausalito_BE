@@ -26,7 +26,7 @@ SORTING_MAP = {
 class HomeBannerListAPIView(APIView):
     def get(self, request, *args, **kwargs):
         banners = HomeBanner.objects.filter(is_active=True).order_by("sort_order", "id")
-        return success_response(HomeBannerSerializer(banners, many=True).data)
+        return success_response(HomeBannerSerializer(banners, many=True, context={"request": request}).data)
 
 
 class ProductListAPIView(ListAPIView):
@@ -71,10 +71,15 @@ class ProductDetailAPIView(RetrieveAPIView):
 
 class ProductDetailMetaAPIView(APIView):
     def get(self, request, pk: int, *args, **kwargs):
-        product = Product.objects.filter(pk=pk, is_active=True).select_related("detail_meta").first()
+        product = (
+            Product.objects.filter(pk=pk, is_active=True)
+            .select_related("detail_meta")
+            .prefetch_related("detail_meta__images")
+            .first()
+        )
         if not product:
             return success_response(None)
         detail_meta = getattr(product, "detail_meta", None)
         if not detail_meta:
             return success_response(None)
-        return success_response(ProductDetailMetaSerializer(detail_meta).data)
+        return success_response(ProductDetailMetaSerializer(detail_meta, context={"request": request}).data)

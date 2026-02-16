@@ -5,6 +5,7 @@
 - drf-spectacular (OpenAPI)
 - django-cors-headers
 - Pillow
+- Local media storage (`MEDIA_ROOT`) for product/banner/review images
 
 ## Project Structure
 ```text
@@ -141,3 +142,7 @@ python manage.py runserver
 - 카카오/네이버페이 연동은 실제 운영키/시그니처 정책으로 교체해야 합니다.
 - 결제 `ready/approve/webhook/cancel`은 현재 확장 가능한 기본 구현 + mock URL 기반입니다.
 - 프론트(`sausalito_fe`)는 기존 더미 서비스 레이어를 API 호출로 교체하면 연동 가능합니다.
+- 이미지 저장 정책:
+  - 상품/배너/상세/리뷰 이미지는 모두 백엔드 `MEDIA_ROOT`에 저장됩니다.
+  - 관리자 페이지에서 직접 업로드 가능하며, 리뷰 이미지는 최대 3장까지 허용됩니다.
+  - 업로드 파일명은 UUID 기반으로 저장되어 원본 파일명을 그대로 노출하지 않습니다.

@@ -20,7 +20,7 @@ class CartAPIView(APIView):
 
     def get(self, request, *args, **kwargs):
         cart, _ = Cart.objects.get_or_create(user=request.user)
-        serializer = CartSerializer(cart)
+        serializer = CartSerializer(cart, context={"request": request})
         return success_response(serializer.data)
 
 
@@ -32,7 +32,7 @@ class CartItemCreateAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         item = serializer.save()
         return success_response(
-            CartItemSerializer(item).data,
+            CartItemSerializer(item, context={"request": request}).data,
             message="장바구니에 추가되었습니다.",
             status_code=status.HTTP_201_CREATED,
         )
@@ -50,7 +50,10 @@ class CartItemUpdateDeleteAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         item = serializer.save()
 
-        return success_response(CartItemSerializer(item).data, message="수량이 변경되었습니다.")
+        return success_response(
+            CartItemSerializer(item, context={"request": request}).data,
+            message="수량이 변경되었습니다.",
+        )
 
     def delete(self, request, item_id: int, *args, **kwargs):
         item = CartItem.objects.filter(id=item_id, cart__user=request.user).first()
