@@ -6,6 +6,7 @@ from rest_framework import serializers
 from apps.catalog.models import HomeBanner, Product, ProductBadge, ProductImage
 from apps.catalog.serializers import has_valid_image_file as has_valid_catalog_image_file
 from apps.orders.models import Order, ReturnRequest, SettlementRecord
+from apps.payments.models import PaymentTransaction
 from apps.reviews.models import Review
 from apps.reviews.serializers import has_valid_image_file
 
@@ -20,6 +21,8 @@ class AdminOrderSerializer(serializers.ModelSerializer):
     return_request_count = serializers.SerializerMethodField()
     has_open_return = serializers.SerializerMethodField()
     settlement_status = serializers.SerializerMethodField()
+    latest_payment_provider = serializers.SerializerMethodField()
+    payment_method = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -30,6 +33,8 @@ class AdminOrderSerializer(serializers.ModelSerializer):
             "user_name",
             "status",
             "payment_status",
+            "payment_method",
+            "latest_payment_provider",
             "shipping_status",
             "subtotal_amount",
             "shipping_fee",
@@ -66,6 +71,42 @@ class AdminOrderSerializer(serializers.ModelSerializer):
         if not hasattr(obj, "settlement_record") or not obj.settlement_record:
             return ""
         return obj.settlement_record.status
+
+    def _get_latest_payment_provider(self, obj: Order) -> str:
+        transactions = getattr(obj, "_prefetched_objects_cache", {}).get("payment_transactions")
+        if transactions is None:
+            tx = obj.payment_transactions.order_by("-created_at").first()
+            return tx.provider if tx else ""
+        if not transactions:
+            return ""
+        latest = max(transactions, key=lambda tx: tx.created_at.timestamp() if tx.created_at else 0)
+        return latest.provider or ""
+
+    def _get_latest_bank_transfer(self, obj: Order):
+        transfers = getattr(obj, "_prefetched_objects_cache", {}).get("bank_transfer_requests")
+        if transfers is None:
+            return obj.bank_transfer_requests.order_by("-created_at").first()
+        if not transfers:
+            return None
+        return max(transfers, key=lambda transfer: transfer.created_at.timestamp() if transfer.created_at else 0)
+
+    def get_latest_payment_provider(self, obj: Order) -> str:
+        return self._get_latest_payment_provider(obj)
+
+    def get_payment_method(self, obj: Order) -> str:
+        latest_transfer = self._get_latest_bank_transfer(obj)
+        if latest_transfer:
+            source = f"{latest_transfer.transfer_note} {latest_transfer.admin_memo}".lower()
+            if "계좌이체" in source or "transfer" in source:
+                return "TRANSFER"
+            return "BANK_DEPOSIT"
+
+        provider = self._get_latest_payment_provider(obj)
+        if provider == PaymentTransaction.Provider.NAVERPAY:
+            return "NAVERPAY"
+        if provider == PaymentTransaction.Provider.BANK_TRANSFER:
+            return "BANK_DEPOSIT"
+        return ""
 
 
 class AdminOrderUpdateSerializer(serializers.Serializer):

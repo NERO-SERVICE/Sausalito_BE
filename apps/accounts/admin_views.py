@@ -629,7 +629,7 @@ class AdminOrderListAPIView(APIView):
     def get(self, request, *args, **kwargs):
         queryset = (
             Order.objects.select_related("user", "settlement_record")
-            .prefetch_related("items", "return_requests")
+            .prefetch_related("items", "return_requests", "payment_transactions", "bank_transfer_requests")
             .order_by("-created_at")
         )
 

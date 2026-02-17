@@ -136,6 +136,8 @@ class AdminSecurityTestCase(TestCase):
         self.assertNotEqual(first["phone"], self.order.phone)
         self.assertIn("****", first["phone"])
         self.assertNotEqual(first["road_address"], self.order.road_address)
+        self.assertIn("payment_method", first)
+        self.assertIn("latest_payment_provider", first)
 
     def test_order_list_full_pii_for_finance_and_logs_view(self):
         self.client.force_authenticate(user=self.finance_admin)
