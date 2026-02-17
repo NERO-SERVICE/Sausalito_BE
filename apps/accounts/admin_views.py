@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from django.core.paginator import EmptyPage, Paginator
+from django.db import transaction
 from django.db.models import Count, Max, Q, Sum
 from django.db.models.functions import Coalesce, TruncMonth
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser
+from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 
 from apps.catalog.models import Category, HomeBanner, Product, ProductBadge, ProductImage
@@ -18,6 +19,7 @@ from apps.reviews.models import Review
 from apps.reviews.serializers import refresh_product_rating
 
 from .admin_serializers import (
+    AdminAuditLogSerializer,
     AdminBannerUpsertSerializer,
     AdminCouponIssueSerializer,
     AdminCouponSerializer,
@@ -39,7 +41,25 @@ from .admin_serializers import (
     AdminUserManageSerializer,
     AdminUserUpdateSerializer,
 )
-from .models import OneToOneInquiry, User, UserCoupon
+from .admin_security import (
+    AdminPermission,
+    AdminRBACPermission,
+    apply_masking_to_inquiries,
+    apply_masking_to_orders,
+    apply_masking_to_returns,
+    apply_masking_to_settlements,
+    apply_masking_to_users,
+    build_request_hash,
+    extract_idempotency_key,
+    get_idempotent_replay_response,
+    get_admin_role,
+    has_admin_permission,
+    has_full_pii_access,
+    log_audit_event,
+    require_admin_permission,
+    save_idempotent_response,
+)
+from .models import AuditLog, OneToOneInquiry, User, UserCoupon
 
 
 def _calculate_return_deduction(order: Order) -> int:
@@ -109,6 +129,88 @@ def _ensure_settlement_record(order: Order) -> SettlementRecord:
         ]
     )
     return settlement
+
+
+ORDER_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    Order.Status.PENDING: {Order.Status.PAID, Order.Status.FAILED, Order.Status.CANCELED},
+    Order.Status.PAID: {Order.Status.CANCELED, Order.Status.PARTIAL_REFUNDED, Order.Status.REFUNDED},
+    Order.Status.FAILED: {Order.Status.PENDING, Order.Status.CANCELED},
+    Order.Status.CANCELED: set(),
+    Order.Status.REFUNDED: set(),
+    Order.Status.PARTIAL_REFUNDED: {Order.Status.REFUNDED},
+}
+
+PAYMENT_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    Order.PaymentStatus.UNPAID: {Order.PaymentStatus.READY, Order.PaymentStatus.APPROVED, Order.PaymentStatus.FAILED},
+    Order.PaymentStatus.READY: {Order.PaymentStatus.APPROVED, Order.PaymentStatus.FAILED, Order.PaymentStatus.CANCELED},
+    Order.PaymentStatus.APPROVED: {Order.PaymentStatus.CANCELED},
+    Order.PaymentStatus.CANCELED: set(),
+    Order.PaymentStatus.FAILED: {Order.PaymentStatus.READY, Order.PaymentStatus.CANCELED},
+}
+
+SHIPPING_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    Order.ShippingStatus.READY: {Order.ShippingStatus.PREPARING, Order.ShippingStatus.SHIPPED},
+    Order.ShippingStatus.PREPARING: {Order.ShippingStatus.SHIPPED},
+    Order.ShippingStatus.SHIPPED: {Order.ShippingStatus.DELIVERED},
+    Order.ShippingStatus.DELIVERED: set(),
+}
+
+RETURN_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    ReturnRequest.Status.REQUESTED: {ReturnRequest.Status.APPROVED, ReturnRequest.Status.REJECTED, ReturnRequest.Status.CLOSED},
+    ReturnRequest.Status.APPROVED: {
+        ReturnRequest.Status.PICKUP_SCHEDULED,
+        ReturnRequest.Status.REJECTED,
+        ReturnRequest.Status.CLOSED,
+    },
+    ReturnRequest.Status.PICKUP_SCHEDULED: {
+        ReturnRequest.Status.RECEIVED,
+        ReturnRequest.Status.REJECTED,
+        ReturnRequest.Status.CLOSED,
+    },
+    ReturnRequest.Status.RECEIVED: {ReturnRequest.Status.REFUNDING, ReturnRequest.Status.REJECTED, ReturnRequest.Status.CLOSED},
+    ReturnRequest.Status.REFUNDING: {ReturnRequest.Status.REFUNDED, ReturnRequest.Status.REJECTED, ReturnRequest.Status.CLOSED},
+    ReturnRequest.Status.REFUNDED: {ReturnRequest.Status.CLOSED},
+    ReturnRequest.Status.REJECTED: {ReturnRequest.Status.CLOSED},
+    ReturnRequest.Status.CLOSED: set(),
+}
+
+SETTLEMENT_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    SettlementRecord.Status.PENDING: {
+        SettlementRecord.Status.HOLD,
+        SettlementRecord.Status.SCHEDULED,
+        SettlementRecord.Status.PAID,
+    },
+    SettlementRecord.Status.HOLD: {
+        SettlementRecord.Status.PENDING,
+        SettlementRecord.Status.SCHEDULED,
+        SettlementRecord.Status.PAID,
+    },
+    SettlementRecord.Status.SCHEDULED: {SettlementRecord.Status.HOLD, SettlementRecord.Status.PAID},
+    SettlementRecord.Status.PAID: set(),
+}
+
+
+def _assert_transition(current: str, next_value: str, transition_map: dict[str, set[str]], field_name: str) -> None:
+    if current == next_value:
+        return
+    allowed = transition_map.get(current, set())
+    if next_value not in allowed:
+        raise ValidationError({field_name: f"상태 전이가 허용되지 않습니다. ({current} -> {next_value})"})
+
+
+def _copy_for_audit(instance, fields: tuple[str, ...]) -> dict:
+    return {field: getattr(instance, field, None) for field in fields}
+
+
+def _log_pii_view_if_needed(request, *, target_type: str, target_id: str = "", metadata: dict | None = None) -> None:
+    if has_full_pii_access(request.user):
+        log_audit_event(
+            request,
+            action="PII_FULL_VIEW",
+            target_type=target_type,
+            target_id=target_id,
+            metadata=metadata or {},
+        )
 
 
 def _normalize_badge_types(raw_value) -> list[str]:
@@ -325,7 +427,8 @@ def _sync_product_images(
 
 
 class AdminDashboardAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"GET": {AdminPermission.DASHBOARD_VIEW}}
 
     def get(self, request, *args, **kwargs):
         orders = Order.objects.all()
@@ -520,7 +623,8 @@ class AdminDashboardAPIView(APIView):
 
 
 class AdminOrderListAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"GET": {AdminPermission.ORDER_VIEW}}
 
     def get(self, request, *args, **kwargs):
         queryset = (
@@ -565,71 +669,208 @@ class AdminOrderListAPIView(APIView):
             limit_number = 80
 
         rows = queryset[:limit_number]
-        return success_response(AdminOrderSerializer(rows, many=True).data)
+        data = AdminOrderSerializer(rows, many=True).data
+        if not has_full_pii_access(request.user):
+            data = apply_masking_to_orders(data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="Order",
+                metadata={
+                    "endpoint": "admin/orders",
+                    "count": len(data),
+                },
+            )
+        return success_response(data)
 
 
 class AdminOrderUpdateAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"PATCH": {AdminPermission.ORDER_UPDATE}}
 
     def patch(self, request, order_no: str, *args, **kwargs):
         order = get_object_or_404(Order, order_no=order_no)
         serializer = AdminOrderUpdateSerializer(data=request.data, context={"order": order})
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.orders.patch",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
 
-        is_updated = False
-        now = timezone.now()
+        with transaction.atomic():
+            order = get_object_or_404(Order.objects.select_for_update(), order_no=order_no)
+            serializer = AdminOrderUpdateSerializer(data=request.data, context={"order": order})
+            serializer.is_valid(raise_exception=True)
+            payload = serializer.validated_data
 
-        for field in (
-            "recipient",
-            "phone",
-            "postal_code",
-            "road_address",
-            "jibun_address",
-            "detail_address",
-            "status",
-            "payment_status",
-            "shipping_status",
-            "courier_name",
-            "tracking_no",
-        ):
-            if field in payload:
-                setattr(order, field, payload[field])
+            before = _copy_for_audit(
+                order,
+                (
+                    "status",
+                    "payment_status",
+                    "shipping_status",
+                    "courier_name",
+                    "tracking_no",
+                    "recipient",
+                    "phone",
+                    "road_address",
+                    "jibun_address",
+                    "detail_address",
+                ),
+            )
+
+            now = timezone.now()
+            is_updated = False
+            status_changed = False
+
+            if "status" in payload:
+                _assert_transition(order.status, payload["status"], ORDER_STATUS_TRANSITIONS, "주문")
+                if payload["status"] != order.status:
+                    status_changed = True
+                order.status = payload["status"]
                 is_updated = True
 
-        if payload.get("issue_invoice"):
-            if not order.invoice_issued_at:
-                order.invoice_issued_at = now
-            if order.shipping_status in {Order.ShippingStatus.READY, Order.ShippingStatus.PREPARING}:
-                order.shipping_status = Order.ShippingStatus.SHIPPED
-            if not order.shipped_at:
+            if "payment_status" in payload:
+                _assert_transition(
+                    order.payment_status,
+                    payload["payment_status"],
+                    PAYMENT_STATUS_TRANSITIONS,
+                    "결제",
+                )
+                if payload["payment_status"] != order.payment_status:
+                    status_changed = True
+                order.payment_status = payload["payment_status"]
+                is_updated = True
+
+            if "shipping_status" in payload:
+                _assert_transition(
+                    order.shipping_status,
+                    payload["shipping_status"],
+                    SHIPPING_STATUS_TRANSITIONS,
+                    "배송",
+                )
+                if payload["shipping_status"] != order.shipping_status:
+                    status_changed = True
+                order.shipping_status = payload["shipping_status"]
+                is_updated = True
+
+            for field in (
+                "recipient",
+                "phone",
+                "postal_code",
+                "road_address",
+                "jibun_address",
+                "detail_address",
+                "courier_name",
+                "tracking_no",
+            ):
+                if field in payload:
+                    setattr(order, field, payload[field])
+                    is_updated = True
+
+            if payload.get("issue_invoice"):
+                if not order.invoice_issued_at:
+                    order.invoice_issued_at = now
+                if order.shipping_status in {Order.ShippingStatus.READY, Order.ShippingStatus.PREPARING}:
+                    _assert_transition(
+                        order.shipping_status,
+                        Order.ShippingStatus.SHIPPED,
+                        SHIPPING_STATUS_TRANSITIONS,
+                        "배송",
+                    )
+                    order.shipping_status = Order.ShippingStatus.SHIPPED
+                    status_changed = True
+                if not order.shipped_at:
+                    order.shipped_at = now
+                is_updated = True
+
+            if order.shipping_status == Order.ShippingStatus.SHIPPED and not order.shipped_at:
                 order.shipped_at = now
-            is_updated = True
+                is_updated = True
 
-        if order.shipping_status == Order.ShippingStatus.SHIPPED and not order.shipped_at:
-            order.shipped_at = now
-            is_updated = True
+            if payload.get("mark_delivered"):
+                _assert_transition(
+                    order.shipping_status,
+                    Order.ShippingStatus.DELIVERED,
+                    SHIPPING_STATUS_TRANSITIONS,
+                    "배송",
+                )
+                order.shipping_status = Order.ShippingStatus.DELIVERED
+                order.delivered_at = now
+                status_changed = True
+                is_updated = True
+            elif order.shipping_status == Order.ShippingStatus.DELIVERED and not order.delivered_at:
+                order.delivered_at = now
+                is_updated = True
 
-        if payload.get("mark_delivered"):
-            order.shipping_status = Order.ShippingStatus.DELIVERED
-            order.delivered_at = now
-            is_updated = True
-        elif order.shipping_status == Order.ShippingStatus.DELIVERED and not order.delivered_at:
-            order.delivered_at = now
-            is_updated = True
+            if not is_updated:
+                return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
 
-        if not is_updated:
-            return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
+            order.save()
+            _ensure_settlement_record(order)
 
-        order.save()
-        _ensure_settlement_record(order)
+            refreshed = (
+                Order.objects.select_related("user", "settlement_record")
+                .prefetch_related("items", "return_requests")
+                .get(id=order.id)
+            )
+            response_data = AdminOrderSerializer(refreshed).data
+            if not has_full_pii_access(request.user):
+                response_data = apply_masking_to_orders(response_data)
+            else:
+                _log_pii_view_if_needed(
+                    request,
+                    target_type="Order",
+                    target_id=str(order.order_no),
+                    metadata={"endpoint": "admin/orders/{order_no}"},
+                )
 
-        refreshed = Order.objects.select_related("user", "settlement_record").prefetch_related("items", "return_requests").get(id=order.id)
-        return success_response(AdminOrderSerializer(refreshed).data, message="주문/배송 정보가 업데이트되었습니다.")
+            response = success_response(response_data, message="주문/배송 정보가 업데이트되었습니다.")
+            save_idempotent_response(
+                request=request,
+                key=idempotency_key,
+                action="admin.orders.patch",
+                request_hash=request_hash,
+                response=response,
+                target_type="Order",
+                target_id=str(order.order_no),
+            )
+            if status_changed:
+                log_audit_event(
+                    request,
+                    action="ORDER_STATUS_CHANGED",
+                    target_type="Order",
+                    target_id=str(order.order_no),
+                    before=before,
+                    after=_copy_for_audit(
+                        order,
+                        (
+                            "status",
+                            "payment_status",
+                            "shipping_status",
+                            "courier_name",
+                            "tracking_no",
+                            "recipient",
+                            "phone",
+                            "road_address",
+                            "jibun_address",
+                            "detail_address",
+                        ),
+                    ),
+                    idempotency_key=idempotency_key,
+                )
+            return response
 
 
 class AdminInquiryListAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"GET": {AdminPermission.INQUIRY_VIEW}}
 
     def get(self, request, *args, **kwargs):
         queryset = OneToOneInquiry.objects.select_related("user", "assigned_admin").order_by("-created_at")
@@ -665,17 +906,52 @@ class AdminInquiryListAPIView(APIView):
         except (TypeError, ValueError):
             limit_number = 200
 
-        return success_response(AdminInquirySerializer(queryset[:limit_number], many=True).data)
+        data = AdminInquirySerializer(queryset[:limit_number], many=True).data
+        if not has_full_pii_access(request.user):
+            data = apply_masking_to_inquiries(data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="Inquiry",
+                metadata={
+                    "endpoint": "admin/inquiries",
+                    "count": len(data),
+                },
+            )
+        return success_response(data)
 
 
 class AdminInquiryAnswerAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"PATCH": {AdminPermission.INQUIRY_UPDATE}}
 
     def patch(self, request, inquiry_id: int, *args, **kwargs):
         inquiry = get_object_or_404(OneToOneInquiry, id=inquiry_id)
         serializer = AdminInquiryAnswerSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.inquiries.patch",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
+
+        before = _copy_for_audit(
+            inquiry,
+            (
+                "status",
+                "category",
+                "priority",
+                "assigned_admin_id",
+                "answer",
+                "internal_note",
+                "sla_due_at",
+            ),
+        )
         delete_answer = bool(payload.pop("delete_answer", False))
 
         updated_fields = ["updated_at"]
@@ -752,11 +1028,53 @@ class AdminInquiryAnswerAPIView(APIView):
                 updated_fields.append("resolved_at")
 
         inquiry.save(update_fields=list(dict.fromkeys(updated_fields)))
-        return success_response(AdminInquirySerializer(inquiry).data, message="CS 문의가 업데이트되었습니다.")
+        response_data = AdminInquirySerializer(inquiry).data
+        if not has_full_pii_access(request.user):
+            response_data = apply_masking_to_inquiries(response_data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="Inquiry",
+                target_id=str(inquiry.id),
+                metadata={"endpoint": "admin/inquiries/{id}/answer"},
+            )
+
+        response = success_response(response_data, message="CS 문의가 업데이트되었습니다.")
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.inquiries.patch",
+            request_hash=request_hash,
+            response=response,
+            target_type="Inquiry",
+            target_id=str(inquiry.id),
+        )
+        log_audit_event(
+            request,
+            action="INQUIRY_UPDATED",
+            target_type="Inquiry",
+            target_id=str(inquiry.id),
+            before=before,
+            after=_copy_for_audit(
+                inquiry,
+                (
+                    "status",
+                    "category",
+                    "priority",
+                    "assigned_admin_id",
+                    "answer",
+                    "internal_note",
+                    "sla_due_at",
+                ),
+            ),
+            idempotency_key=idempotency_key,
+        )
+        return response
 
 
 class AdminReviewListAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"GET": {AdminPermission.REVIEW_VIEW}}
 
     def get(self, request, *args, **kwargs):
         queryset = Review.objects.select_related("user", "product").prefetch_related("images")
@@ -818,6 +1136,14 @@ class AdminReviewListAPIView(APIView):
             page_obj = paginator.page(paginator.num_pages or 1)
 
         rows = AdminReviewSerializer(page_obj.object_list, many=True, context={"request": request}).data
+        if not has_full_pii_access(request.user):
+            rows = apply_masking_to_inquiries(rows)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="Review",
+                metadata={"endpoint": "admin/reviews", "count": len(rows)},
+            )
         return success_response(
             {
                 "count": paginator.count,
@@ -832,41 +1158,107 @@ class AdminReviewListAPIView(APIView):
 
 
 class AdminReviewVisibilityAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"PATCH": {AdminPermission.REVIEW_UPDATE}}
 
     def patch(self, request, review_id: int, *args, **kwargs):
-        review = get_object_or_404(Review.objects.select_related("product"), id=review_id)
         serializer = AdminReviewVisibilitySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({"visible": payload.get("visible")})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.reviews.visibility.patch",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
 
-        visible = serializer.validated_data["visible"]
+        review = get_object_or_404(Review.objects.select_related("product"), id=review_id)
+        visible = payload["visible"]
         next_status = Review.Status.VISIBLE if visible else Review.Status.HIDDEN
 
+        before = {"status": review.status}
         if review.status != next_status:
             review.status = next_status
             review.save(update_fields=["status", "updated_at"])
             refresh_product_rating(review.product)
 
-        return success_response(
+        response = success_response(
             AdminReviewSerializer(review, context={"request": request}).data,
             message="리뷰 노출 상태가 변경되었습니다.",
         )
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.reviews.visibility.patch",
+            request_hash=request_hash,
+            response=response,
+            target_type="Review",
+            target_id=str(review.id),
+        )
+        log_audit_event(
+            request,
+            action="REVIEW_STATUS_CHANGED",
+            target_type="Review",
+            target_id=str(review.id),
+            before=before,
+            after={"status": review.status},
+            idempotency_key=idempotency_key,
+        )
+        return response
 
 
 class AdminReviewDeleteAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"DELETE": {AdminPermission.REVIEW_UPDATE}}
 
     def delete(self, request, review_id: int, *args, **kwargs):
+        idempotency_key = extract_idempotency_key(request, {})
+        request_hash = build_request_hash({"review_id": review_id, "method": "DELETE"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.reviews.delete",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
+
         review = get_object_or_404(Review.objects.select_related("product"), id=review_id)
+        before = {"status": review.status}
         if review.status != Review.Status.DELETED:
             review.status = Review.Status.DELETED
             review.save(update_fields=["status", "updated_at"])
             refresh_product_rating(review.product)
-        return success_response(message="리뷰가 삭제 처리되었습니다.")
+        response = success_response(message="리뷰가 삭제 처리되었습니다.")
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.reviews.delete",
+            request_hash=request_hash,
+            response=response,
+            target_type="Review",
+            target_id=str(review.id),
+        )
+        log_audit_event(
+            request,
+            action="REVIEW_DELETED",
+            target_type="Review",
+            target_id=str(review.id),
+            before=before,
+            after={"status": review.status},
+            idempotency_key=idempotency_key,
+        )
+        return response
 
 
 class AdminReturnRequestListCreateAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.RETURN_VIEW},
+        "POST": {AdminPermission.RETURN_UPDATE},
+    }
 
     def get(self, request, *args, **kwargs):
         queryset = ReturnRequest.objects.select_related("order", "user").order_by("-requested_at")
@@ -890,136 +1282,318 @@ class AdminReturnRequestListCreateAPIView(APIView):
         except (TypeError, ValueError):
             limit_number = 200
 
-        return success_response(AdminReturnRequestSerializer(queryset[:limit_number], many=True).data)
+        data = AdminReturnRequestSerializer(queryset[:limit_number], many=True).data
+        if not has_full_pii_access(request.user):
+            data = apply_masking_to_returns(data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="ReturnRequest",
+                metadata={"endpoint": "admin/returns", "count": len(data)},
+            )
+        return success_response(data)
 
     def post(self, request, *args, **kwargs):
         serializer = AdminReturnRequestCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
-
-        order = get_object_or_404(Order, order_no=payload["order_no"])
-        requested_amount = payload.get("requested_amount")
-        if requested_amount is None:
-            requested_amount = int(order.total_amount or 0)
-
-        return_request = ReturnRequest.objects.create(
-            order=order,
-            user=order.user,
-            reason_title=payload["reason_title"],
-            reason_detail=payload.get("reason_detail", ""),
-            requested_amount=requested_amount,
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.returns.create",
+            request_hash=request_hash,
         )
+        if replay_response is not None:
+            return replay_response
 
-        settlement = _ensure_settlement_record(order)
-        if settlement.status != SettlementRecord.Status.PAID:
-            settlement.status = SettlementRecord.Status.HOLD
-            settlement.save(update_fields=["status", "updated_at"])
+        with transaction.atomic():
+            order = get_object_or_404(Order.objects.select_for_update(), order_no=payload["order_no"])
+            requested_amount = payload.get("requested_amount")
+            if requested_amount is None:
+                requested_amount = int(order.total_amount or 0)
 
-        return success_response(
-            AdminReturnRequestSerializer(return_request).data,
+            return_request = ReturnRequest.objects.create(
+                order=order,
+                user=order.user,
+                reason_title=payload["reason_title"],
+                reason_detail=payload.get("reason_detail", ""),
+                requested_amount=requested_amount,
+            )
+
+            settlement = _ensure_settlement_record(order)
+            if settlement.status != SettlementRecord.Status.PAID:
+                settlement.status = SettlementRecord.Status.HOLD
+                settlement.save(update_fields=["status", "updated_at"])
+
+        response_data = AdminReturnRequestSerializer(return_request).data
+        if not has_full_pii_access(request.user):
+            response_data = apply_masking_to_returns(response_data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="ReturnRequest",
+                target_id=str(return_request.id),
+                metadata={"endpoint": "admin/returns"},
+            )
+
+        response = success_response(
+            response_data,
             message="반품/환불 요청이 등록되었습니다.",
             status_code=status.HTTP_201_CREATED,
         )
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.returns.create",
+            request_hash=request_hash,
+            response=response,
+            target_type="ReturnRequest",
+            target_id=str(return_request.id),
+        )
+        log_audit_event(
+            request,
+            action="RETURN_REQUEST_CREATED",
+            target_type="ReturnRequest",
+            target_id=str(return_request.id),
+            after={
+                "status": return_request.status,
+                "requested_amount": return_request.requested_amount,
+                "order_no": order.order_no,
+            },
+            idempotency_key=idempotency_key,
+        )
+        return response
 
 
 class AdminReturnRequestUpdateAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "PATCH": {AdminPermission.RETURN_UPDATE},
+        "DELETE": {AdminPermission.RETURN_UPDATE},
+    }
 
     def patch(self, request, return_request_id: int, *args, **kwargs):
-        row = get_object_or_404(ReturnRequest.objects.select_related("order", "user"), id=return_request_id)
         serializer = AdminReturnRequestUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
-
-        now = timezone.now()
-        updated_fields = ["updated_at"]
-
-        for field in ("approved_amount", "rejected_reason", "pickup_courier_name", "pickup_tracking_no", "admin_note"):
-            if field in payload:
-                setattr(row, field, payload[field])
-                updated_fields.append(field)
-
-        if "status" in payload:
-            row.status = payload["status"]
-            updated_fields.append("status")
-
-            if row.status == ReturnRequest.Status.APPROVED and not row.approved_at:
-                row.approved_at = now
-                updated_fields.append("approved_at")
-            if row.status == ReturnRequest.Status.RECEIVED and not row.received_at:
-                row.received_at = now
-                updated_fields.append("received_at")
-            if row.status == ReturnRequest.Status.REFUNDED and not row.refunded_at:
-                row.refunded_at = now
-                updated_fields.append("refunded_at")
-            if row.status in {ReturnRequest.Status.REJECTED, ReturnRequest.Status.CLOSED} and not row.closed_at:
-                row.closed_at = now
-                updated_fields.append("closed_at")
-
-        row.save(update_fields=list(dict.fromkeys(updated_fields)))
-
-        order = row.order
-        if row.status == ReturnRequest.Status.REFUNDED:
-            refund_amount = int(row.approved_amount or row.requested_amount or 0)
-            if refund_amount >= int(order.total_amount or 0):
-                order.status = Order.Status.REFUNDED
-            else:
-                order.status = Order.Status.PARTIAL_REFUNDED
-            order.payment_status = Order.PaymentStatus.CANCELED
-            order.save(update_fields=["status", "payment_status", "updated_at"])
-
-        settlement = _ensure_settlement_record(order)
-        if settlement.status != SettlementRecord.Status.PAID:
-            has_open_return = order.return_requests.filter(
-                status__in=[
-                    ReturnRequest.Status.REQUESTED,
-                    ReturnRequest.Status.APPROVED,
-                    ReturnRequest.Status.PICKUP_SCHEDULED,
-                    ReturnRequest.Status.RECEIVED,
-                    ReturnRequest.Status.REFUNDING,
-                ]
-            ).exists()
-            settlement.status = SettlementRecord.Status.HOLD if has_open_return else SettlementRecord.Status.PENDING
-            settlement.settlement_amount = (
-                settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - _calculate_return_deduction(order)
-            )
-            settlement.return_deduction = _calculate_return_deduction(order)
-            settlement.save(update_fields=["status", "return_deduction", "settlement_amount", "updated_at"])
-
-        refreshed = ReturnRequest.objects.select_related("order", "user").get(id=row.id)
-        return success_response(
-            AdminReturnRequestSerializer(refreshed).data,
-            message="반품/환불 요청이 업데이트되었습니다.",
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.returns.patch",
+            request_hash=request_hash,
         )
+        if replay_response is not None:
+            return replay_response
+
+        with transaction.atomic():
+            row = get_object_or_404(
+                ReturnRequest.objects.select_related("order", "user").select_for_update(),
+                id=return_request_id,
+            )
+            before = _copy_for_audit(
+                row,
+                (
+                    "status",
+                    "approved_amount",
+                    "rejected_reason",
+                    "pickup_courier_name",
+                    "pickup_tracking_no",
+                    "admin_note",
+                ),
+            )
+            now = timezone.now()
+            updated_fields = ["updated_at"]
+
+            for field in ("approved_amount", "rejected_reason", "pickup_courier_name", "pickup_tracking_no", "admin_note"):
+                if field in payload:
+                    setattr(row, field, payload[field])
+                    updated_fields.append(field)
+
+            if "status" in payload:
+                next_status = payload["status"]
+                _assert_transition(row.status, next_status, RETURN_STATUS_TRANSITIONS, "반품")
+                if next_status in {ReturnRequest.Status.REFUNDING, ReturnRequest.Status.REFUNDED}:
+                    require_admin_permission(request.user, AdminPermission.REFUND_EXECUTE)
+
+                row.status = next_status
+                updated_fields.append("status")
+
+                if row.status == ReturnRequest.Status.APPROVED and not row.approved_at:
+                    row.approved_at = now
+                    updated_fields.append("approved_at")
+                if row.status == ReturnRequest.Status.RECEIVED and not row.received_at:
+                    row.received_at = now
+                    updated_fields.append("received_at")
+                if row.status == ReturnRequest.Status.REFUNDED and not row.refunded_at:
+                    row.refunded_at = now
+                    updated_fields.append("refunded_at")
+                if row.status in {ReturnRequest.Status.REJECTED, ReturnRequest.Status.CLOSED} and not row.closed_at:
+                    row.closed_at = now
+                    updated_fields.append("closed_at")
+
+            row.save(update_fields=list(dict.fromkeys(updated_fields)))
+
+            order = row.order
+            if row.status == ReturnRequest.Status.REFUNDED:
+                refund_amount = int(row.approved_amount or row.requested_amount or 0)
+                if refund_amount >= int(order.total_amount or 0):
+                    order.status = Order.Status.REFUNDED
+                else:
+                    order.status = Order.Status.PARTIAL_REFUNDED
+                order.payment_status = Order.PaymentStatus.CANCELED
+                order.save(update_fields=["status", "payment_status", "updated_at"])
+
+            settlement = _ensure_settlement_record(order)
+            if settlement.status != SettlementRecord.Status.PAID:
+                has_open_return = order.return_requests.filter(
+                    status__in=[
+                        ReturnRequest.Status.REQUESTED,
+                        ReturnRequest.Status.APPROVED,
+                        ReturnRequest.Status.PICKUP_SCHEDULED,
+                        ReturnRequest.Status.RECEIVED,
+                        ReturnRequest.Status.REFUNDING,
+                    ]
+                ).exists()
+                settlement.status = SettlementRecord.Status.HOLD if has_open_return else SettlementRecord.Status.PENDING
+                settlement.settlement_amount = (
+                    settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - _calculate_return_deduction(order)
+                )
+                settlement.return_deduction = _calculate_return_deduction(order)
+                settlement.save(update_fields=["status", "return_deduction", "settlement_amount", "updated_at"])
+
+            refreshed = ReturnRequest.objects.select_related("order", "user").get(id=row.id)
+            response_data = AdminReturnRequestSerializer(refreshed).data
+            if not has_full_pii_access(request.user):
+                response_data = apply_masking_to_returns(response_data)
+            else:
+                _log_pii_view_if_needed(
+                    request,
+                    target_type="ReturnRequest",
+                    target_id=str(row.id),
+                    metadata={"endpoint": "admin/returns/{id}"},
+                )
+
+            response = success_response(
+                response_data,
+                message="반품/환불 요청이 업데이트되었습니다.",
+            )
+            save_idempotent_response(
+                request=request,
+                key=idempotency_key,
+                action="admin.returns.patch",
+                request_hash=request_hash,
+                response=response,
+                target_type="ReturnRequest",
+                target_id=str(row.id),
+            )
+            log_audit_event(
+                request,
+                action="RETURN_STATUS_CHANGED",
+                target_type="ReturnRequest",
+                target_id=str(row.id),
+                before=before,
+                after=_copy_for_audit(
+                    row,
+                    (
+                        "status",
+                        "approved_amount",
+                        "rejected_reason",
+                        "pickup_courier_name",
+                        "pickup_tracking_no",
+                        "admin_note",
+                    ),
+                ),
+                idempotency_key=idempotency_key,
+            )
+            if row.status == ReturnRequest.Status.REFUNDED:
+                log_audit_event(
+                    request,
+                    action="REFUND_EXECUTED",
+                    target_type="ReturnRequest",
+                    target_id=str(row.id),
+                    metadata={
+                        "order_no": order.order_no,
+                        "refund_amount": int(row.approved_amount or row.requested_amount or 0),
+                    },
+                    idempotency_key=idempotency_key,
+                )
+            return response
 
     def delete(self, request, return_request_id: int, *args, **kwargs):
-        row = get_object_or_404(ReturnRequest.objects.select_related("order"), id=return_request_id)
-        order = row.order
-        row.delete()
+        idempotency_key = extract_idempotency_key(request, {})
+        request_hash = build_request_hash({"return_request_id": return_request_id, "method": "DELETE"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.returns.delete",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
 
-        settlement = SettlementRecord.objects.filter(order=order).first()
-        if settlement and settlement.status != SettlementRecord.Status.PAID:
-            has_open_return = order.return_requests.filter(
-                status__in=[
-                    ReturnRequest.Status.REQUESTED,
-                    ReturnRequest.Status.APPROVED,
-                    ReturnRequest.Status.PICKUP_SCHEDULED,
-                    ReturnRequest.Status.RECEIVED,
-                    ReturnRequest.Status.REFUNDING,
-                ]
-            ).exists()
-            settlement.status = SettlementRecord.Status.HOLD if has_open_return else SettlementRecord.Status.PENDING
-            settlement.return_deduction = _calculate_return_deduction(order)
-            settlement.settlement_amount = (
-                settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - settlement.return_deduction
+        with transaction.atomic():
+            row = get_object_or_404(ReturnRequest.objects.select_related("order").select_for_update(), id=return_request_id)
+            order = row.order
+            before = _copy_for_audit(
+                row,
+                (
+                    "status",
+                    "approved_amount",
+                    "rejected_reason",
+                    "pickup_courier_name",
+                    "pickup_tracking_no",
+                    "admin_note",
+                ),
             )
-            settlement.save(update_fields=["status", "return_deduction", "settlement_amount", "updated_at"])
+            row_id = row.id
+            row.delete()
 
-        return success_response(message="반품/환불 요청이 삭제되었습니다.")
+            settlement = SettlementRecord.objects.select_for_update().filter(order=order).first()
+            if settlement and settlement.status != SettlementRecord.Status.PAID:
+                has_open_return = order.return_requests.filter(
+                    status__in=[
+                        ReturnRequest.Status.REQUESTED,
+                        ReturnRequest.Status.APPROVED,
+                        ReturnRequest.Status.PICKUP_SCHEDULED,
+                        ReturnRequest.Status.RECEIVED,
+                        ReturnRequest.Status.REFUNDING,
+                    ]
+                ).exists()
+                settlement.status = SettlementRecord.Status.HOLD if has_open_return else SettlementRecord.Status.PENDING
+                settlement.return_deduction = _calculate_return_deduction(order)
+                settlement.settlement_amount = (
+                    settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - settlement.return_deduction
+                )
+                settlement.save(update_fields=["status", "return_deduction", "settlement_amount", "updated_at"])
+
+            response = success_response(message="반품/환불 요청이 삭제되었습니다.")
+            save_idempotent_response(
+                request=request,
+                key=idempotency_key,
+                action="admin.returns.delete",
+                request_hash=request_hash,
+                response=response,
+                target_type="ReturnRequest",
+                target_id=str(row_id),
+            )
+            log_audit_event(
+                request,
+                action="RETURN_REQUEST_DELETED",
+                target_type="ReturnRequest",
+                target_id=str(row_id),
+                before=before,
+                idempotency_key=idempotency_key,
+            )
+            return response
 
 
 class AdminSettlementListGenerateAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.SETTLEMENT_VIEW},
+        "POST": {AdminPermission.SETTLEMENT_UPDATE},
+    }
 
     def get(self, request, *args, **kwargs):
         queryset = SettlementRecord.objects.select_related("order", "order__user").order_by("-created_at")
@@ -1038,12 +1612,30 @@ class AdminSettlementListGenerateAPIView(APIView):
         except (TypeError, ValueError):
             limit_number = 200
 
-        return success_response(AdminSettlementSerializer(queryset[:limit_number], many=True).data)
+        data = AdminSettlementSerializer(queryset[:limit_number], many=True).data
+        if not has_full_pii_access(request.user):
+            data = apply_masking_to_settlements(data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="SettlementRecord",
+                metadata={"endpoint": "admin/settlements", "count": len(data)},
+            )
+        return success_response(data)
 
     def post(self, request, *args, **kwargs):
         serializer = AdminSettlementGenerateSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         only_paid_orders = serializer.validated_data.get("only_paid_orders", True)
+        idempotency_key = extract_idempotency_key(request, serializer.validated_data)
+        request_hash = build_request_hash(serializer.validated_data)
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.settlements.generate",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
 
         queryset = Order.objects.all().order_by("-created_at")
         if only_paid_orders:
@@ -1053,62 +1645,169 @@ class AdminSettlementListGenerateAPIView(APIView):
         for order in queryset[:1000]:
             upserted.append(_ensure_settlement_record(order))
 
-        return success_response(
+        settlement_rows = AdminSettlementSerializer(upserted[:30], many=True).data
+        if not has_full_pii_access(request.user):
+            settlement_rows = apply_masking_to_settlements(settlement_rows)
+
+        response = success_response(
             {
                 "generated_count": len(upserted),
-                "settlements": AdminSettlementSerializer(upserted[:30], many=True).data,
+                "settlements": settlement_rows,
             },
             message="정산 레코드가 생성/갱신되었습니다.",
             status_code=status.HTTP_201_CREATED,
         )
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.settlements.generate",
+            request_hash=request_hash,
+            response=response,
+            target_type="SettlementRecord",
+            target_id="bulk",
+        )
+        log_audit_event(
+            request,
+            action="SETTLEMENT_RECORD_GENERATED",
+            target_type="SettlementRecord",
+            target_id="bulk",
+            metadata={"generated_count": len(upserted), "only_paid_orders": bool(only_paid_orders)},
+            idempotency_key=idempotency_key,
+        )
+        return response
 
 
 class AdminSettlementUpdateAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "PATCH": {AdminPermission.SETTLEMENT_UPDATE},
+        "DELETE": {AdminPermission.SETTLEMENT_UPDATE},
+    }
 
     def patch(self, request, settlement_id: int, *args, **kwargs):
-        settlement = get_object_or_404(SettlementRecord.objects.select_related("order", "order__user"), id=settlement_id)
         serializer = AdminSettlementUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
-
-        updated_fields = ["updated_at"]
-
-        for field in (
-            "status",
-            "pg_fee",
-            "platform_fee",
-            "return_deduction",
-            "expected_payout_date",
-            "memo",
-        ):
-            if field in payload:
-                setattr(settlement, field, payload[field])
-                updated_fields.append(field)
-
-        settlement.settlement_amount = (
-            int(settlement.gross_amount or 0)
-            - int(settlement.pg_fee or 0)
-            - int(settlement.platform_fee or 0)
-            - int(settlement.return_deduction or 0)
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.settlements.patch",
+            request_hash=request_hash,
         )
-        updated_fields.append("settlement_amount")
+        if replay_response is not None:
+            return replay_response
 
-        if payload.get("mark_paid"):
-            settlement.status = SettlementRecord.Status.PAID
-            settlement.paid_at = timezone.now()
-            updated_fields.extend(["status", "paid_at"])
-        elif settlement.status == SettlementRecord.Status.PAID and not settlement.paid_at:
-            settlement.paid_at = timezone.now()
-            updated_fields.append("paid_at")
+        with transaction.atomic():
+            settlement = get_object_or_404(
+                SettlementRecord.objects.select_related("order", "order__user").select_for_update(),
+                id=settlement_id,
+            )
+            before = _copy_for_audit(
+                settlement,
+                (
+                    "status",
+                    "pg_fee",
+                    "platform_fee",
+                    "return_deduction",
+                    "settlement_amount",
+                    "expected_payout_date",
+                    "paid_at",
+                    "memo",
+                ),
+            )
 
-        settlement.save(update_fields=list(dict.fromkeys(updated_fields)))
-        return success_response(
-            AdminSettlementSerializer(settlement).data,
-            message="정산 정보가 업데이트되었습니다.",
-        )
+            updated_fields = ["updated_at"]
+
+            for field in (
+                "status",
+                "pg_fee",
+                "platform_fee",
+                "return_deduction",
+                "expected_payout_date",
+                "memo",
+            ):
+                if field in payload:
+                    if field == "status":
+                        _assert_transition(settlement.status, payload["status"], SETTLEMENT_STATUS_TRANSITIONS, "정산")
+                    setattr(settlement, field, payload[field])
+                    updated_fields.append(field)
+
+            settlement.settlement_amount = (
+                int(settlement.gross_amount or 0)
+                - int(settlement.pg_fee or 0)
+                - int(settlement.platform_fee or 0)
+                - int(settlement.return_deduction or 0)
+            )
+            updated_fields.append("settlement_amount")
+
+            if payload.get("mark_paid"):
+                settlement.status = SettlementRecord.Status.PAID
+                settlement.paid_at = timezone.now()
+                updated_fields.extend(["status", "paid_at"])
+            elif settlement.status == SettlementRecord.Status.PAID and not settlement.paid_at:
+                settlement.paid_at = timezone.now()
+                updated_fields.append("paid_at")
+
+            settlement.save(update_fields=list(dict.fromkeys(updated_fields)))
+            response_data = AdminSettlementSerializer(settlement).data
+            if not has_full_pii_access(request.user):
+                response_data = apply_masking_to_settlements(response_data)
+            else:
+                _log_pii_view_if_needed(
+                    request,
+                    target_type="SettlementRecord",
+                    target_id=str(settlement.id),
+                    metadata={"endpoint": "admin/settlements/{id}"},
+                )
+
+            response = success_response(
+                response_data,
+                message="정산 정보가 업데이트되었습니다.",
+            )
+            save_idempotent_response(
+                request=request,
+                key=idempotency_key,
+                action="admin.settlements.patch",
+                request_hash=request_hash,
+                response=response,
+                target_type="SettlementRecord",
+                target_id=str(settlement.id),
+            )
+            log_audit_event(
+                request,
+                action="SETTLEMENT_UPDATED",
+                target_type="SettlementRecord",
+                target_id=str(settlement.id),
+                before=before,
+                after=_copy_for_audit(
+                    settlement,
+                    (
+                        "status",
+                        "pg_fee",
+                        "platform_fee",
+                        "return_deduction",
+                        "settlement_amount",
+                        "expected_payout_date",
+                        "paid_at",
+                        "memo",
+                    ),
+                ),
+                idempotency_key=idempotency_key,
+            )
+            return response
 
     def delete(self, request, settlement_id: int, *args, **kwargs):
+        idempotency_key = extract_idempotency_key(request, {})
+        request_hash = build_request_hash({"settlement_id": settlement_id, "method": "DELETE"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.settlements.delete",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
+
         settlement = get_object_or_404(SettlementRecord, id=settlement_id)
         if settlement.status == SettlementRecord.Status.PAID:
             return error_response(
@@ -1116,12 +1815,35 @@ class AdminSettlementUpdateAPIView(APIView):
                 "지급 완료된 정산은 삭제할 수 없습니다.",
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
+        before = _copy_for_audit(settlement, ("status", "settlement_amount", "paid_at"))
         settlement.delete()
-        return success_response(message="정산 레코드가 삭제되었습니다.")
+        response = success_response(message="정산 레코드가 삭제되었습니다.")
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.settlements.delete",
+            request_hash=request_hash,
+            response=response,
+            target_type="SettlementRecord",
+            target_id=str(settlement_id),
+        )
+        log_audit_event(
+            request,
+            action="SETTLEMENT_DELETED",
+            target_type="SettlementRecord",
+            target_id=str(settlement_id),
+            before=before,
+            idempotency_key=idempotency_key,
+        )
+        return response
 
 
 class AdminCouponListCreateAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.COUPON_VIEW},
+        "POST": {AdminPermission.COUPON_UPDATE},
+    }
 
     def get(self, request, *args, **kwargs):
         queryset = UserCoupon.objects.select_related("user").order_by("-created_at")
@@ -1188,7 +1910,8 @@ class AdminCouponListCreateAPIView(APIView):
 
 
 class AdminCouponDetailAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"DELETE": {AdminPermission.COUPON_UPDATE}}
 
     def delete(self, request, coupon_id: int, *args, **kwargs):
         coupon = get_object_or_404(UserCoupon, id=coupon_id)
@@ -1197,19 +1920,95 @@ class AdminCouponDetailAPIView(APIView):
 
 
 class AdminStaffUserListAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"GET": {AdminPermission.STAFF_VIEW}}
 
     def get(self, request, *args, **kwargs):
         rows = list(
             User.objects.filter(is_active=True, is_staff=True)
             .order_by("id")
-            .values("id", "email", "name")
+            .values("id", "email", "name", "admin_role")
         )
         return success_response(rows)
 
 
+class AdminAuditLogListAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"GET": {AdminPermission.AUDIT_LOG_VIEW}}
+
+    def get(self, request, *args, **kwargs):
+        queryset = AuditLog.objects.select_related("actor_admin").order_by("-occurred_at")
+
+        action = request.query_params.get("action", "").strip()
+        if action:
+            queryset = queryset.filter(action=action)
+
+        result = request.query_params.get("result", "").strip()
+        if result:
+            queryset = queryset.filter(result=result)
+
+        target_type = request.query_params.get("target_type", "").strip()
+        if target_type:
+            queryset = queryset.filter(target_type=target_type)
+
+        target_id = request.query_params.get("target_id", "").strip()
+        if target_id:
+            queryset = queryset.filter(target_id=target_id)
+
+        actor_admin_id = request.query_params.get("actor_admin_id")
+        if actor_admin_id and str(actor_admin_id).isdigit():
+            queryset = queryset.filter(actor_admin_id=int(actor_admin_id))
+
+        q = request.query_params.get("q", "").strip()
+        if q:
+            queryset = queryset.filter(
+                Q(action__icontains=q)
+                | Q(target_type__icontains=q)
+                | Q(target_id__icontains=q)
+                | Q(request_id__icontains=q)
+                | Q(idempotency_key__icontains=q)
+                | Q(actor_admin__email__icontains=q)
+            )
+
+        limit = request.query_params.get("limit", "200")
+        try:
+            limit_number = min(max(int(limit), 1), 1000)
+        except (TypeError, ValueError):
+            limit_number = 200
+
+        rows = []
+        for row in queryset[:limit_number]:
+            rows.append(
+                {
+                    "id": row.id,
+                    "occurred_at": row.occurred_at,
+                    "actor_admin_id": row.actor_admin_id,
+                    "actor_admin_email": row.actor_admin.email if row.actor_admin else "",
+                    "actor_role": row.actor_role,
+                    "action": row.action,
+                    "target_type": row.target_type,
+                    "target_id": row.target_id,
+                    "request_id": row.request_id,
+                    "idempotency_key": row.idempotency_key,
+                    "ip": str(row.ip or ""),
+                    "user_agent": row.user_agent,
+                    "before_json": row.before_json,
+                    "after_json": row.after_json,
+                    "metadata_json": row.metadata_json,
+                    "result": row.result,
+                    "error_code": row.error_code,
+                }
+            )
+
+        return success_response(AdminAuditLogSerializer(rows, many=True).data)
+
+
 class AdminHomeBannerListCreateAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.BANNER_VIEW},
+        "POST": {AdminPermission.BANNER_UPDATE},
+    }
 
     def get(self, request, *args, **kwargs):
         rows = HomeBanner.objects.all().order_by("sort_order", "id")
@@ -1246,7 +2045,11 @@ class AdminHomeBannerListCreateAPIView(APIView):
 
 
 class AdminHomeBannerDetailAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "PATCH": {AdminPermission.BANNER_UPDATE},
+        "DELETE": {AdminPermission.BANNER_UPDATE},
+    }
 
     def patch(self, request, banner_id: int, *args, **kwargs):
         row = get_object_or_404(HomeBanner, id=banner_id)
@@ -1292,7 +2095,8 @@ class AdminHomeBannerDetailAPIView(APIView):
 
 
 class AdminProductMetaAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"GET": {AdminPermission.PRODUCT_VIEW}}
 
     def get(self, request, *args, **kwargs):
         badge_options = [
@@ -1318,7 +2122,11 @@ class AdminProductMetaAPIView(APIView):
 
 
 class AdminProductListCreateAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.PRODUCT_VIEW},
+        "POST": {AdminPermission.PRODUCT_UPDATE},
+    }
 
     def get(self, request, *args, **kwargs):
         queryset = Product.objects.prefetch_related("badges", "images").order_by("-created_at")
@@ -1431,7 +2239,11 @@ class AdminProductListCreateAPIView(APIView):
 
 
 class AdminProductDetailAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "PATCH": {AdminPermission.PRODUCT_UPDATE},
+        "DELETE": {AdminPermission.PRODUCT_UPDATE},
+    }
 
     def patch(self, request, product_id: int, *args, **kwargs):
         product = get_object_or_404(Product, id=product_id)
@@ -1538,7 +2350,8 @@ class AdminProductDetailAPIView(APIView):
 
 
 class AdminUserListAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"GET": {AdminPermission.USER_VIEW}}
 
     def get(self, request, *args, **kwargs):
         queryset = User.objects.annotate(
@@ -1570,17 +2383,39 @@ class AdminUserListAPIView(APIView):
             limit_number = 200
 
         rows = queryset[:limit_number]
-        return success_response(AdminUserManageSerializer(rows, many=True).data)
+        data = AdminUserManageSerializer(rows, many=True).data
+        if not has_full_pii_access(request.user):
+            data = apply_masking_to_users(data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="User",
+                metadata={"endpoint": "admin/users/manage", "count": len(data)},
+            )
+        return success_response(data)
 
 
 class AdminUserDetailAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "PATCH": {AdminPermission.USER_UPDATE},
+        "DELETE": {AdminPermission.USER_UPDATE},
+    }
 
     def patch(self, request, user_id: int, *args, **kwargs):
         target = get_object_or_404(User, id=user_id)
         serializer = AdminUserUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.users.patch",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
 
         if target.is_superuser and ("is_active" in payload or "is_staff" in payload):
             return error_response(
@@ -1596,11 +2431,32 @@ class AdminUserDetailAPIView(APIView):
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
+        if "admin_role" in payload and get_admin_role(request.user) != User.AdminRole.SUPER_ADMIN:
+            return error_response(
+                "FORBIDDEN",
+                "관리자 역할 변경은 SUPER_ADMIN만 수행할 수 있습니다.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        before = _copy_for_audit(target, ("is_staff", "admin_role", "is_active", "name", "phone"))
         updated_fields = ["updated_at"]
         for field in ("name", "phone", "is_active", "is_staff"):
             if field in payload:
                 setattr(target, field, payload[field])
                 updated_fields.append(field)
+
+        if "admin_role" in payload:
+            target.admin_role = payload["admin_role"]
+            updated_fields.append("admin_role")
+
+        if "is_staff" in payload and payload["is_staff"] is False:
+            if target.admin_role != User.AdminRole.READ_ONLY:
+                target.admin_role = User.AdminRole.READ_ONLY
+                updated_fields.append("admin_role")
+        elif "is_staff" in payload and payload["is_staff"] is True and "admin_role" not in payload:
+            if not target.admin_role:
+                target.admin_role = User.AdminRole.OPS
+                updated_fields.append("admin_role")
 
         target.save(update_fields=list(dict.fromkeys(updated_fields)))
         refreshed = User.objects.annotate(
@@ -1608,9 +2464,51 @@ class AdminUserDetailAPIView(APIView):
             review_count=Count("reviews", distinct=True),
             inquiry_count=Count("inquiries", distinct=True),
         ).get(id=target.id)
-        return success_response(AdminUserManageSerializer(refreshed).data, message="회원 정보가 저장되었습니다.")
+        response_data = AdminUserManageSerializer(refreshed).data
+        role_changed = before.get("admin_role") != refreshed.admin_role or before.get("is_staff") != refreshed.is_staff
+        if not has_full_pii_access(request.user):
+            response_data = apply_masking_to_users(response_data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="User",
+                target_id=str(refreshed.id),
+                metadata={"endpoint": "admin/users/manage/{id}"},
+            )
+
+        response = success_response(response_data, message="회원 정보가 저장되었습니다.")
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.users.patch",
+            request_hash=request_hash,
+            response=response,
+            target_type="User",
+            target_id=str(refreshed.id),
+        )
+        if role_changed:
+            log_audit_event(
+                request,
+                action="ADMIN_ROLE_CHANGED",
+                target_type="User",
+                target_id=str(refreshed.id),
+                before={"is_staff": before.get("is_staff"), "admin_role": before.get("admin_role")},
+                after={"is_staff": refreshed.is_staff, "admin_role": refreshed.admin_role},
+                idempotency_key=idempotency_key,
+            )
+        return response
 
     def delete(self, request, user_id: int, *args, **kwargs):
+        idempotency_key = extract_idempotency_key(request, {})
+        request_hash = build_request_hash({"user_id": user_id, "method": "DELETE"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.users.delete",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
+
         target = get_object_or_404(User, id=user_id)
         if target.id == request.user.id:
             return error_response(
@@ -1624,4 +2522,22 @@ class AdminUserDetailAPIView(APIView):
 
         target.is_active = False
         target.save(update_fields=["is_active", "updated_at"])
-        return success_response(message="회원이 비활성화되었습니다.")
+        response = success_response(message="회원이 비활성화되었습니다.")
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.users.delete",
+            request_hash=request_hash,
+            response=response,
+            target_type="User",
+            target_id=str(user_id),
+        )
+        log_audit_event(
+            request,
+            action="USER_DEACTIVATED",
+            target_type="User",
+            target_id=str(user_id),
+            after={"is_active": False},
+            idempotency_key=idempotency_key,
+        )
+        return response

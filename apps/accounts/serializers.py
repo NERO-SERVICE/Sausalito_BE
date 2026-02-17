@@ -4,6 +4,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
+from .admin_security import get_admin_permissions, get_admin_role
 from .models import (
     DepositTransaction,
     OneToOneInquiry,
@@ -17,11 +18,41 @@ from .models import (
 
 class UserMeSerializer(serializers.ModelSerializer):
     isStaff = serializers.BooleanField(source="is_staff", read_only=True)
+    adminRole = serializers.SerializerMethodField()
+    permissions = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ("id", "email", "username", "name", "phone", "is_staff", "isStaff", "created_at")
-        read_only_fields = ("id", "email", "username", "is_staff", "isStaff", "created_at")
+        fields = (
+            "id",
+            "email",
+            "username",
+            "name",
+            "phone",
+            "is_staff",
+            "isStaff",
+            "admin_role",
+            "adminRole",
+            "permissions",
+            "created_at",
+        )
+        read_only_fields = (
+            "id",
+            "email",
+            "username",
+            "is_staff",
+            "isStaff",
+            "admin_role",
+            "adminRole",
+            "permissions",
+            "created_at",
+        )
+
+    def get_adminRole(self, obj: User) -> str:
+        return get_admin_role(obj)
+
+    def get_permissions(self, obj: User) -> list[str]:
+        return sorted(get_admin_permissions(obj))
 
 
 class LoginSerializer(serializers.Serializer):

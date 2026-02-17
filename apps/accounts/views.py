@@ -23,6 +23,7 @@ from apps.orders.serializers import OrderSerializer
 from apps.reviews.models import Review
 from apps.reviews.serializers import ReviewListSerializer
 
+from .admin_security import get_admin_role, log_audit_event
 from .models import (
     DepositTransaction,
     OneToOneInquiry,
@@ -65,6 +66,14 @@ class LoginAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
         django_login(request, user)
+        if user.is_staff:
+            log_audit_event(
+                request,
+                action="ADMIN_LOGIN",
+                target_type="AdminUser",
+                target_id=str(user.id),
+                metadata={"admin_role": get_admin_role(user)},
+            )
         return success_response(
             {
                 "user": UserMeSerializer(user).data,
@@ -128,6 +137,14 @@ class LogoutAPIView(APIView):
         except TokenError as exc:
             raise AuthenticationFailed("유효하지 않은 리프레시 토큰입니다.") from exc
 
+        if request.user.is_staff:
+            log_audit_event(
+                request,
+                action="ADMIN_LOGOUT",
+                target_type="AdminUser",
+                target_id=str(request.user.id),
+                metadata={"admin_role": get_admin_role(request.user)},
+            )
         return success_response(message="로그아웃되었습니다.")
 
 

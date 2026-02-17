@@ -9,11 +9,21 @@ from .managers import UserManager
 
 
 class User(AbstractUser):
+    class AdminRole(models.TextChoices):
+        SUPER_ADMIN = "SUPER_ADMIN", "SUPER_ADMIN"
+        OPS = "OPS", "OPS"
+        CS = "CS", "CS"
+        WAREHOUSE = "WAREHOUSE", "WAREHOUSE"
+        FINANCE = "FINANCE", "FINANCE"
+        MARKETING = "MARKETING", "MARKETING"
+        READ_ONLY = "READ_ONLY", "READ_ONLY"
+
     username = models.CharField(max_length=150, unique=True, blank=True)
     email = models.EmailField(unique=True)
     name = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=20, blank=True)
     kakao_sub = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    admin_role = models.CharField(max_length=24, choices=AdminRole.choices, default=AdminRole.READ_ONLY)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -162,6 +172,65 @@ class OneToOneInquiry(models.Model):
     answered_at = models.DateTimeField(null=True, blank=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
     sla_due_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+
+class AuditLog(models.Model):
+    class Result(models.TextChoices):
+        SUCCESS = "SUCCESS", "SUCCESS"
+        FAIL = "FAIL", "FAIL"
+
+    occurred_at = models.DateTimeField(auto_now_add=True)
+    actor_admin = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="audit_logs",
+    )
+    actor_role = models.CharField(max_length=24, blank=True)
+    action = models.CharField(max_length=120)
+    target_type = models.CharField(max_length=80, blank=True)
+    target_id = models.CharField(max_length=120, blank=True)
+    request_id = models.CharField(max_length=120, blank=True)
+    idempotency_key = models.CharField(max_length=64, blank=True)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    before_json = models.JSONField(default=dict, blank=True)
+    after_json = models.JSONField(default=dict, blank=True)
+    metadata_json = models.JSONField(default=dict, blank=True)
+    result = models.CharField(max_length=10, choices=Result.choices, default=Result.SUCCESS)
+    error_code = models.CharField(max_length=80, blank=True)
+
+    class Meta:
+        ordering = ["-occurred_at", "-id"]
+        indexes = [
+            models.Index(fields=["occurred_at"]),
+            models.Index(fields=["action", "occurred_at"]),
+            models.Index(fields=["target_type", "target_id"]),
+            models.Index(fields=["actor_admin", "occurred_at"]),
+        ]
+
+
+class IdempotencyRecord(models.Model):
+    key = models.CharField(max_length=64, unique=True)
+    action = models.CharField(max_length=120)
+    actor_admin = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="idempotency_records",
+    )
+    request_hash = models.CharField(max_length=64)
+    response_status_code = models.PositiveIntegerField(default=200)
+    response_body = models.JSONField(default=dict, blank=True)
+    target_type = models.CharField(max_length=80, blank=True)
+    target_id = models.CharField(max_length=120, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -9,6 +9,7 @@ from apps.orders.models import Order, ReturnRequest, SettlementRecord
 from apps.reviews.models import Review
 from apps.reviews.serializers import has_valid_image_file
 
+from .admin_security import get_admin_permissions
 from .models import OneToOneInquiry, User, UserCoupon
 
 
@@ -81,6 +82,7 @@ class AdminOrderUpdateSerializer(serializers.Serializer):
     tracking_no = serializers.CharField(max_length=100, required=False, allow_blank=True)
     issue_invoice = serializers.BooleanField(required=False, default=False)
     mark_delivered = serializers.BooleanField(required=False, default=False)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
     def validate(self, attrs):
         order: Order = self.context["order"]
@@ -147,6 +149,7 @@ class AdminInquiryAnswerSerializer(serializers.Serializer):
     assigned_admin_id = serializers.IntegerField(required=False, allow_null=True)
     internal_note = serializers.CharField(required=False, allow_blank=True)
     sla_due_at = serializers.DateTimeField(required=False, allow_null=True)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
     def validate(self, attrs):
         assigned_admin_id = attrs.get("assigned_admin_id")
@@ -156,7 +159,8 @@ class AdminInquiryAnswerSerializer(serializers.Serializer):
             elif not User.objects.filter(id=assigned_admin_id, is_staff=True, is_active=True).exists():
                 raise serializers.ValidationError({"assigned_admin_id": "유효한 관리자 계정이 아닙니다."})
 
-        if not attrs:
+        effective_attrs = {k: v for k, v in attrs.items() if k != "idempotency_key"}
+        if not effective_attrs:
             raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
 
         return attrs
@@ -195,6 +199,7 @@ class AdminReturnRequestCreateSerializer(serializers.Serializer):
     reason_title = serializers.CharField(max_length=200)
     reason_detail = serializers.CharField(required=False, allow_blank=True)
     requested_amount = serializers.IntegerField(min_value=0, required=False)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
 
 class AdminReturnRequestUpdateSerializer(serializers.Serializer):
@@ -204,9 +209,11 @@ class AdminReturnRequestUpdateSerializer(serializers.Serializer):
     pickup_courier_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     pickup_tracking_no = serializers.CharField(max_length=100, required=False, allow_blank=True)
     admin_note = serializers.CharField(required=False, allow_blank=True)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
     def validate(self, attrs):
-        if not attrs:
+        effective_attrs = {k: v for k, v in attrs.items() if k != "idempotency_key"}
+        if not effective_attrs:
             raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
         return attrs
 
@@ -259,9 +266,11 @@ class AdminSettlementUpdateSerializer(serializers.Serializer):
     expected_payout_date = serializers.DateField(required=False, allow_null=True)
     mark_paid = serializers.BooleanField(required=False, default=False)
     memo = serializers.CharField(required=False, allow_blank=True)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
     def validate(self, attrs):
-        if not attrs:
+        effective_attrs = {k: v for k, v in attrs.items() if k != "idempotency_key"}
+        if not effective_attrs:
             raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
         return attrs
 
@@ -308,6 +317,7 @@ class AdminReviewSerializer(serializers.ModelSerializer):
 
 class AdminReviewVisibilitySerializer(serializers.Serializer):
     visible = serializers.BooleanField()
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
 
 class AdminCouponSerializer(serializers.ModelSerializer):
@@ -516,6 +526,8 @@ class AdminUserManageSerializer(serializers.ModelSerializer):
     order_count = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
     inquiry_count = serializers.SerializerMethodField()
+    admin_role = serializers.CharField(read_only=True)
+    admin_permissions = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -526,6 +538,8 @@ class AdminUserManageSerializer(serializers.ModelSerializer):
             "phone",
             "is_active",
             "is_staff",
+            "admin_role",
+            "admin_permissions",
             "order_count",
             "review_count",
             "inquiry_count",
@@ -542,14 +556,42 @@ class AdminUserManageSerializer(serializers.ModelSerializer):
     def get_inquiry_count(self, obj: User) -> int:
         return int(getattr(obj, "inquiry_count", 0))
 
+    def get_admin_permissions(self, obj: User) -> list[str]:
+        if not obj.is_staff:
+            return []
+        return sorted(get_admin_permissions(obj))
+
 
 class AdminUserUpdateSerializer(serializers.Serializer):
     name = serializers.CharField(required=False, allow_blank=True, max_length=100)
     phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
     is_active = serializers.BooleanField(required=False)
     is_staff = serializers.BooleanField(required=False)
+    admin_role = serializers.ChoiceField(choices=User.AdminRole.choices, required=False)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
     def validate(self, attrs):
-        if not attrs:
+        effective_attrs = {k: v for k, v in attrs.items() if k != "idempotency_key"}
+        if not effective_attrs:
             raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
         return attrs
+
+
+class AdminAuditLogSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    occurred_at = serializers.DateTimeField()
+    actor_admin_id = serializers.IntegerField(allow_null=True)
+    actor_admin_email = serializers.CharField()
+    actor_role = serializers.CharField(allow_blank=True)
+    action = serializers.CharField()
+    target_type = serializers.CharField(allow_blank=True)
+    target_id = serializers.CharField(allow_blank=True)
+    request_id = serializers.CharField(allow_blank=True)
+    idempotency_key = serializers.CharField(allow_blank=True)
+    ip = serializers.CharField(allow_blank=True)
+    user_agent = serializers.CharField(allow_blank=True)
+    before_json = serializers.JSONField()
+    after_json = serializers.JSONField()
+    metadata_json = serializers.JSONField()
+    result = serializers.CharField()
+    error_code = serializers.CharField(allow_blank=True)

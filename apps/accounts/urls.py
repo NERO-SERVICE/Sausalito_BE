@@ -9,6 +9,7 @@ from .admin_views import (
     AdminCouponDetailAPIView,
     AdminCouponListCreateAPIView,
     AdminDashboardAPIView,
+    AdminAuditLogListAPIView,
     AdminInquiryAnswerAPIView,
     AdminInquiryListAPIView,
     AdminOrderListAPIView,
@@ -74,4 +75,5 @@ urlpatterns = [
     path("admin/coupons", AdminCouponListCreateAPIView.as_view(), name="admin-coupons"),
     path("admin/coupons/<int:coupon_id>", AdminCouponDetailAPIView.as_view(), name="admin-coupon-delete"),
     path("admin/staff-users", AdminStaffUserListAPIView.as_view(), name="admin-staff-users"),
+    path("admin/audit-logs", AdminAuditLogListAPIView.as_view(), name="admin-audit-logs"),
 ]

@@ -371,17 +371,45 @@ class Command(BaseCommand):
                 "name": "관리자",
                 "is_staff": True,
                 "is_superuser": True,
+                "admin_role": User.AdminRole.SUPER_ADMIN,
             },
         )
         admin_user.set_password("admin1234")
         if admin_created:
             admin_user.save(update_fields=["password"])
-        elif not admin_user.is_staff or not admin_user.is_superuser:
+        elif not admin_user.is_staff or not admin_user.is_superuser or admin_user.admin_role != User.AdminRole.SUPER_ADMIN:
             admin_user.is_staff = True
             admin_user.is_superuser = True
-            admin_user.save(update_fields=["password", "is_staff", "is_superuser"])
+            admin_user.admin_role = User.AdminRole.SUPER_ADMIN
+            admin_user.save(update_fields=["password", "is_staff", "is_superuser", "admin_role"])
         else:
             admin_user.save(update_fields=["password"])
+
+        role_staff_defaults = [
+            ("ops@sausalito.com", "운영관리자", User.AdminRole.OPS),
+            ("cs@sausalito.com", "CS관리자", User.AdminRole.CS),
+            ("finance@sausalito.com", "정산관리자", User.AdminRole.FINANCE),
+            ("warehouse@sausalito.com", "물류관리자", User.AdminRole.WAREHOUSE),
+            ("marketing@sausalito.com", "마케팅관리자", User.AdminRole.MARKETING),
+            ("readonly@sausalito.com", "읽기전용관리자", User.AdminRole.READ_ONLY),
+        ]
+        for email, name, role in role_staff_defaults:
+            staff_user, _ = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    "username": email.split("@")[0],
+                    "name": name,
+                    "is_staff": True,
+                    "is_superuser": False,
+                    "admin_role": role,
+                },
+            )
+            staff_user.name = name
+            staff_user.is_staff = True
+            staff_user.is_superuser = False
+            staff_user.admin_role = role
+            staff_user.set_password("admin1234")
+            staff_user.save(update_fields=["name", "is_staff", "is_superuser", "admin_role", "password"])
 
         product_map: dict[int, Product] = {}
         for row in PRODUCTS:
