@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
@@ -122,6 +123,20 @@ class RecentViewedProduct(models.Model):
 
 
 class OneToOneInquiry(models.Model):
+    class Category(models.TextChoices):
+        DELIVERY = "DELIVERY", "DELIVERY"
+        RETURN_REFUND = "RETURN_REFUND", "RETURN_REFUND"
+        PAYMENT = "PAYMENT", "PAYMENT"
+        ORDER = "ORDER", "ORDER"
+        PRODUCT = "PRODUCT", "PRODUCT"
+        ETC = "ETC", "ETC"
+
+    class Priority(models.TextChoices):
+        LOW = "LOW", "LOW"
+        NORMAL = "NORMAL", "NORMAL"
+        HIGH = "HIGH", "HIGH"
+        URGENT = "URGENT", "URGENT"
+
     class Status(models.TextChoices):
         OPEN = "OPEN", "OPEN"
         ANSWERED = "ANSWERED", "ANSWERED"
@@ -130,9 +145,23 @@ class OneToOneInquiry(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="inquiries")
     title = models.CharField(max_length=200)
     content = models.TextField()
+    category = models.CharField(max_length=30, choices=Category.choices, default=Category.ETC)
+    priority = models.CharField(max_length=20, choices=Priority.choices, default=Priority.NORMAL)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
+    channel = models.CharField(max_length=20, default="WEB")
+    assigned_admin = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_inquiries",
+    )
+    internal_note = models.TextField(blank=True)
     answer = models.TextField(blank=True)
+    first_response_at = models.DateTimeField(null=True, blank=True)
     answered_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    sla_due_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

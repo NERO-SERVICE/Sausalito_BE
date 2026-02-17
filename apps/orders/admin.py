@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Order, OrderItem
+from .models import Order, OrderItem, ReturnRequest, SettlementRecord
 
 
 class OrderItemInline(admin.TabularInline):
@@ -39,3 +39,17 @@ class OrderAdmin(admin.ModelAdmin):
 @admin.register(OrderItem)
 class OrderItemAdmin(admin.ModelAdmin):
     list_display = ("id", "order", "product_name_snapshot", "quantity", "line_total")
+
+
+@admin.register(ReturnRequest)
+class ReturnRequestAdmin(admin.ModelAdmin):
+    list_display = ("id", "order", "user", "status", "requested_amount", "approved_amount", "requested_at")
+    list_filter = ("status",)
+    search_fields = ("order__order_no", "user__email", "reason_title")
+
+
+@admin.register(SettlementRecord)
+class SettlementRecordAdmin(admin.ModelAdmin):
+    list_display = ("id", "order", "status", "settlement_amount", "expected_payout_date", "paid_at", "created_at")
+    list_filter = ("status",)
+    search_fields = ("order__order_no", "memo")

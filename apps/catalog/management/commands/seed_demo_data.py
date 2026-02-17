@@ -32,7 +32,7 @@ from apps.accounts.models import (
     UserCoupon,
     WishlistItem,
 )
-from apps.orders.models import Order, OrderItem
+from apps.orders.models import Order, OrderItem, ReturnRequest, SettlementRecord
 from apps.payments.models import PaymentTransaction
 from apps.reviews.models import Review, ReviewImage
 
@@ -332,6 +332,8 @@ class Command(BaseCommand):
         if options["reset"]:
             self.stdout.write("기존 데이터를 정리합니다...")
             PaymentTransaction.objects.all().delete()
+            SettlementRecord.objects.all().delete()
+            ReturnRequest.objects.all().delete()
             Order.objects.all().delete()
             OneToOneInquiry.objects.all().delete()
             RecentViewedProduct.objects.all().delete()
@@ -581,6 +583,7 @@ class Command(BaseCommand):
             },
         ]
 
+        order_map = {}
         for row in demo_order_rows:
             product = product_map.get(row["product_id"])
             if not product:
@@ -637,6 +640,73 @@ class Command(BaseCommand):
                 raw_request_json={"seed": True},
                 raw_response_json={"seed": True},
             )
+            order_map[order.order_no] = order
+
+        for order in order_map.values():
+            pg_fee = int(round(order.total_amount * 0.033))
+            platform_fee = int(round(order.total_amount * 0.08))
+            SettlementRecord.objects.update_or_create(
+                order=order,
+                defaults={
+                    "status": SettlementRecord.Status.PENDING,
+                    "gross_amount": order.total_amount,
+                    "discount_amount": order.discount_amount,
+                    "shipping_fee": order.shipping_fee,
+                    "pg_fee": pg_fee,
+                    "platform_fee": platform_fee,
+                    "return_deduction": 0,
+                    "settlement_amount": order.total_amount - pg_fee - platform_fee,
+                    "expected_payout_date": timezone.localdate(order.created_at + timedelta(days=3)),
+                },
+            )
+
+        order_for_open_return = order_map.get("SAUDEMO20260217002")
+        if order_for_open_return:
+            ReturnRequest.objects.update_or_create(
+                order=order_for_open_return,
+                reason_title="배송 지연으로 인한 반품 요청",
+                defaults={
+                    "user": demo_user,
+                    "status": ReturnRequest.Status.REQUESTED,
+                    "reason_detail": "출고 예정일을 넘겨 빠른 환불을 요청합니다.",
+                    "requested_amount": order_for_open_return.total_amount,
+                    "approved_amount": 0,
+                },
+            )
+            SettlementRecord.objects.filter(order=order_for_open_return).update(status=SettlementRecord.Status.HOLD)
+
+        order_for_refund = order_map.get("SAUDEMO20260217003")
+        if order_for_refund:
+            refund_amount = min(12000, int(order_for_refund.total_amount))
+            ReturnRequest.objects.update_or_create(
+                order=order_for_refund,
+                reason_title="일부 상품 파손으로 부분 환불",
+                defaults={
+                    "user": demo_user,
+                    "status": ReturnRequest.Status.REFUNDED,
+                    "reason_detail": "배송 중 파손이 확인되어 부분 환불 처리되었습니다.",
+                    "requested_amount": refund_amount,
+                    "approved_amount": refund_amount,
+                    "approved_at": timezone.now() - timedelta(days=2),
+                    "refunded_at": timezone.now() - timedelta(days=1, hours=8),
+                    "closed_at": timezone.now() - timedelta(days=1, hours=8),
+                    "admin_note": "고객 동의 하에 부분 환불 완료",
+                },
+            )
+            settlement = SettlementRecord.objects.filter(order=order_for_refund).first()
+            if settlement:
+                settlement.return_deduction = refund_amount
+                settlement.settlement_amount = settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - refund_amount
+                settlement.status = SettlementRecord.Status.SCHEDULED
+                settlement.save(update_fields=["return_deduction", "settlement_amount", "status", "updated_at"])
+
+        order_for_paid_settlement = order_map.get("SAUDEMO20260217001")
+        if order_for_paid_settlement:
+            settlement = SettlementRecord.objects.filter(order=order_for_paid_settlement).first()
+            if settlement:
+                settlement.status = SettlementRecord.Status.PAID
+                settlement.paid_at = timezone.now() - timedelta(hours=10)
+                settlement.save(update_fields=["status", "paid_at", "updated_at"])
 
         point_samples = [
             ("EARN", 3000, "신규 가입 적립금"),
@@ -710,12 +780,46 @@ class Command(BaseCommand):
             row.viewed_at = now - timedelta(hours=offset * 3)
             row.save(update_fields=["viewed_at"])
 
-        OneToOneInquiry.objects.get_or_create(
+        OneToOneInquiry.objects.update_or_create(
             user=demo_user,
             title="배송 상태가 궁금합니다.",
             defaults={
                 "content": "주문한 상품의 현재 배송 단계를 확인하고 싶습니다.",
+                "category": OneToOneInquiry.Category.DELIVERY,
+                "priority": OneToOneInquiry.Priority.HIGH,
                 "status": OneToOneInquiry.Status.OPEN,
+                "assigned_admin": admin_user,
+                "sla_due_at": timezone.now() + timedelta(hours=4),
+            },
+        )
+        OneToOneInquiry.objects.update_or_create(
+            user=demo_user,
+            title="부분 환불 처리 일정 문의",
+            defaults={
+                "content": "부분 환불 건이 카드사에 반영되는 예상 일정을 알고 싶습니다.",
+                "category": OneToOneInquiry.Category.RETURN_REFUND,
+                "priority": OneToOneInquiry.Priority.NORMAL,
+                "status": OneToOneInquiry.Status.ANSWERED,
+                "assigned_admin": admin_user,
+                "answer": "카드사 정책에 따라 영업일 기준 3~5일 내 반영됩니다.",
+                "first_response_at": timezone.now() - timedelta(days=1),
+                "answered_at": timezone.now() - timedelta(days=1),
+                "internal_note": "환불 처리 완료 건 안내",
+            },
+        )
+        OneToOneInquiry.objects.update_or_create(
+            user=demo_user,
+            title="상품 성분 문의",
+            defaults={
+                "content": "오메가3 제품에 알레르기 유발 성분이 포함되어 있는지 궁금합니다.",
+                "category": OneToOneInquiry.Category.PRODUCT,
+                "priority": OneToOneInquiry.Priority.LOW,
+                "status": OneToOneInquiry.Status.CLOSED,
+                "assigned_admin": admin_user,
+                "answer": "알레르기 유발 가능 원료는 라벨 하단을 확인해 주세요.",
+                "first_response_at": timezone.now() - timedelta(days=3),
+                "answered_at": timezone.now() - timedelta(days=3),
+                "resolved_at": timezone.now() - timedelta(days=2, hours=20),
             },
         )
 

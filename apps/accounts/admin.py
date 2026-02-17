@@ -77,6 +77,6 @@ class RecentViewedProductAdmin(admin.ModelAdmin):
 
 @admin.register(OneToOneInquiry)
 class OneToOneInquiryAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "title", "status", "created_at", "answered_at")
+    list_display = ("id", "user", "title", "category", "priority", "status", "assigned_admin", "created_at", "answered_at")
     search_fields = ("user__email", "title", "content")
-    list_filter = ("status",)
+    list_filter = ("status", "category", "priority")

@@ -50,8 +50,10 @@ class Order(models.Model):
 
     payment_status = models.CharField(max_length=24, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID)
     shipping_status = models.CharField(max_length=24, choices=ShippingStatus.choices, default=ShippingStatus.READY)
+
     courier_name = models.CharField(max_length=100, blank=True)
     tracking_no = models.CharField(max_length=100, blank=True)
+
     invoice_issued_at = models.DateTimeField(null=True, blank=True)
     shipped_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
@@ -87,3 +89,69 @@ class OrderItem(models.Model):
 
     def __str__(self) -> str:
         return f"{self.order.order_no} - {self.product_name_snapshot}"
+
+
+class ReturnRequest(models.Model):
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "REQUESTED"
+        APPROVED = "APPROVED", "APPROVED"
+        PICKUP_SCHEDULED = "PICKUP_SCHEDULED", "PICKUP_SCHEDULED"
+        RECEIVED = "RECEIVED", "RECEIVED"
+        REFUNDING = "REFUNDING", "REFUNDING"
+        REFUNDED = "REFUNDED", "REFUNDED"
+        REJECTED = "REJECTED", "REJECTED"
+        CLOSED = "CLOSED", "CLOSED"
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="return_requests")
+    user = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="return_requests")
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.REQUESTED)
+    reason_title = models.CharField(max_length=200)
+    reason_detail = models.TextField(blank=True)
+    requested_amount = models.PositiveIntegerField(default=0)
+    approved_amount = models.PositiveIntegerField(default=0)
+    rejected_reason = models.TextField(blank=True)
+    pickup_courier_name = models.CharField(max_length=100, blank=True)
+    pickup_tracking_no = models.CharField(max_length=100, blank=True)
+    admin_note = models.TextField(blank=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    received_at = models.DateTimeField(null=True, blank=True)
+    refunded_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-requested_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Return {self.order.order_no} ({self.status})"
+
+
+class SettlementRecord(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "PENDING"
+        HOLD = "HOLD", "HOLD"
+        SCHEDULED = "SCHEDULED", "SCHEDULED"
+        PAID = "PAID", "PAID"
+
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name="settlement_record")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    gross_amount = models.IntegerField(default=0)
+    discount_amount = models.IntegerField(default=0)
+    shipping_fee = models.IntegerField(default=0)
+    pg_fee = models.IntegerField(default=0)
+    platform_fee = models.IntegerField(default=0)
+    return_deduction = models.IntegerField(default=0)
+    settlement_amount = models.IntegerField(default=0)
+    expected_payout_date = models.DateField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    memo = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Settlement {self.order.order_no} ({self.status})"
