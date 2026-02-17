@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.core.paginator import EmptyPage, Paginator
-from django.db.models import Count, Q, Sum
-from django.db.models.functions import Coalesce
+from django.db.models import Count, Max, Q, Sum
+from django.db.models.functions import Coalesce, TruncMonth
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAdminUser
 from rest_framework.views import APIView
 
-from apps.catalog.models import HomeBanner, Product, ProductBadge, ProductImage
+from apps.catalog.models import Category, HomeBanner, Product, ProductBadge, ProductImage
 from apps.common.response import error_response, success_response
 from apps.orders.models import Order, ReturnRequest, SettlementRecord
 from apps.reviews.models import Review
@@ -132,32 +132,129 @@ def _normalize_badge_types(raw_value) -> list[str]:
     return normalized
 
 
+def _normalize_keyword_values(raw_value) -> list[str]:
+    values: list[str] = []
+
+    if raw_value is None:
+        return values
+
+    if isinstance(raw_value, str):
+        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+    elif isinstance(raw_value, (list, tuple, set)):
+        for row in raw_value:
+            row_value = str(row).strip()
+            if not row_value:
+                continue
+            values.extend([item.strip() for item in row_value.split(",") if item.strip()])
+    else:
+        row_value = str(raw_value).strip()
+        if row_value:
+            values.extend([item.strip() for item in row_value.split(",") if item.strip()])
+
+    normalized: list[str] = []
+    for value in values:
+        if value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _normalize_integer_list(raw_value) -> list[int]:
+    values: list[int] = []
+    if raw_value is None:
+        return values
+
+    if isinstance(raw_value, str):
+        rows = [item.strip() for item in raw_value.split(",") if item.strip()]
+    elif isinstance(raw_value, (list, tuple, set)):
+        rows = []
+        for item in raw_value:
+            item_value = str(item).strip()
+            if not item_value:
+                continue
+            rows.extend([chunk.strip() for chunk in item_value.split(",") if chunk.strip()])
+    else:
+        rows = [str(raw_value).strip()]
+
+    for row in rows:
+        try:
+            number = int(row)
+        except (TypeError, ValueError):
+            continue
+        if number <= 0 or number in values:
+            continue
+        values.append(number)
+    return values
+
+
+def _month_start(base_date: date) -> date:
+    return base_date.replace(day=1)
+
+
+def _shift_month(base_month: date, delta: int) -> date:
+    month_index = base_month.year * 12 + (base_month.month - 1) + delta
+    year = month_index // 12
+    month = month_index % 12 + 1
+    return date(year, month, 1)
+
+
 def _build_product_payload(data) -> dict:
     payload: dict = {}
     field_pairs = (
+        ("category_id", "category_id"),
+        ("sku", "sku"),
         ("name", "name"),
         ("one_line", "one_line"),
         ("description", "description"),
+        ("intake", "intake"),
+        ("target", "target"),
+        ("manufacturer", "manufacturer"),
+        ("origin_country", "origin_country"),
+        ("tax_status", "tax_status"),
+        ("delivery_fee", "delivery_fee"),
+        ("free_shipping_amount", "free_shipping_amount"),
+        ("search_keywords", "search_keywords"),
+        ("release_date", "release_date"),
+        ("display_start_at", "display_start_at"),
+        ("display_end_at", "display_end_at"),
         ("price", "price"),
         ("original_price", "original_price"),
         ("stock", "stock"),
         ("is_active", "is_active"),
+        ("thumbnail_image_id", "thumbnail_image_id"),
     )
+    nullable_fields = {"category_id", "release_date", "display_start_at", "display_end_at", "thumbnail_image_id"}
+    skip_empty_numeric_fields = {"price", "original_price", "stock", "delivery_fee", "free_shipping_amount"}
 
     for source_field, target_field in field_pairs:
         if hasattr(data, "__contains__"):
-            if source_field in data:
-                payload[target_field] = data.get(source_field)
+            if source_field not in data:
+                continue
+            value = data.get(source_field)
         else:
             value = data.get(source_field)
-            if value is not None:
-                payload[target_field] = value
+            if value is None:
+                continue
+
+        if value == "" and target_field in nullable_fields:
+            payload[target_field] = None
+            continue
+        if value == "" and target_field in skip_empty_numeric_fields:
+            continue
+        payload[target_field] = value
 
     badge_raw = data.getlist("badge_types") if hasattr(data, "getlist") else data.get("badge_types")
     if isinstance(badge_raw, list) and len(badge_raw) == 1 and "," in str(badge_raw[0]):
         badge_raw = str(badge_raw[0])
     if badge_raw is not None and (not isinstance(badge_raw, list) or badge_raw):
         payload["badge_types"] = _normalize_badge_types(badge_raw)
+
+    keyword_raw = data.getlist("search_keywords") if hasattr(data, "getlist") else data.get("search_keywords")
+    if keyword_raw is not None and (not isinstance(keyword_raw, list) or keyword_raw):
+        payload["search_keywords"] = _normalize_keyword_values(keyword_raw)
+
+    delete_image_ids_raw = data.getlist("delete_image_ids") if hasattr(data, "getlist") else data.get("delete_image_ids")
+    if delete_image_ids_raw is not None and (not isinstance(delete_image_ids_raw, list) or delete_image_ids_raw):
+        payload["delete_image_ids"] = _normalize_integer_list(delete_image_ids_raw)
 
     return payload
 
@@ -170,27 +267,68 @@ def _set_product_badges(product: Product, badge_types: list[str]) -> None:
     )
 
 
+def _sync_product_images(
+    product: Product,
+    *,
+    thumbnail_file=None,
+    image_files: list | None = None,
+    delete_image_ids: list[int] | None = None,
+    thumbnail_image_id: int | None = None,
+) -> None:
+    if delete_image_ids:
+        product.images.filter(id__in=delete_image_ids).delete()
+
+    if thumbnail_file:
+        current_thumbnail = product.images.filter(is_thumbnail=True).order_by("sort_order", "id").first()
+        if current_thumbnail:
+            current_thumbnail.image = thumbnail_file
+            current_thumbnail.sort_order = 0
+            current_thumbnail.is_thumbnail = True
+            current_thumbnail.save(update_fields=["image", "sort_order", "is_thumbnail"])
+        else:
+            ProductImage.objects.create(product=product, image=thumbnail_file, is_thumbnail=True, sort_order=0)
+
+    valid_image_files = [row for row in (image_files or []) if row]
+    if valid_image_files:
+        max_sort = int(product.images.aggregate(max_sort=Coalesce(Max("sort_order"), 0)).get("max_sort") or 0)
+        ProductImage.objects.bulk_create(
+            [
+                ProductImage(
+                    product=product,
+                    image=image_file,
+                    is_thumbnail=False,
+                    sort_order=max_sort + index + 1,
+                )
+                for index, image_file in enumerate(valid_image_files)
+            ]
+        )
+
+    if thumbnail_image_id is not None:
+        target = product.images.filter(id=thumbnail_image_id).first()
+        if target:
+            product.images.exclude(id=target.id).filter(is_thumbnail=True).update(is_thumbnail=False)
+            if not target.is_thumbnail:
+                target.is_thumbnail = True
+                target.save(update_fields=["is_thumbnail"])
+
+    thumbnail_rows = list(product.images.filter(is_thumbnail=True).order_by("sort_order", "id"))
+    if len(thumbnail_rows) > 1:
+        keep_id = thumbnail_rows[0].id
+        product.images.exclude(id=keep_id).filter(is_thumbnail=True).update(is_thumbnail=False)
+
+    if not product.images.filter(is_thumbnail=True).exists():
+        fallback = product.images.order_by("sort_order", "id").first()
+        if fallback:
+            fallback.is_thumbnail = True
+            fallback.sort_order = 0
+            fallback.save(update_fields=["is_thumbnail", "sort_order"])
+
+
 class AdminDashboardAPIView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request, *args, **kwargs):
         orders = Order.objects.all()
-        paid_orders = orders.filter(payment_status=Order.PaymentStatus.APPROVED)
-
-        total_paid_amount = paid_orders.aggregate(total=Coalesce(Sum("total_amount"), 0)).get("total") or 0
-        total_order_amount = orders.aggregate(total=Coalesce(Sum("total_amount"), 0)).get("total") or 0
-
-        today = timezone.localdate()
-        today_paid_amount = (
-            paid_orders.filter(created_at__date=today).aggregate(total=Coalesce(Sum("total_amount"), 0)).get("total") or 0
-        )
-
-        shipping_pending_count = orders.filter(
-            payment_status=Order.PaymentStatus.APPROVED,
-            shipping_status__in=[Order.ShippingStatus.READY, Order.ShippingStatus.PREPARING],
-        ).count()
-
-        now = timezone.now()
         open_return_statuses = [
             ReturnRequest.Status.REQUESTED,
             ReturnRequest.Status.APPROVED,
@@ -206,7 +344,110 @@ class AdminDashboardAPIView(APIView):
             .get("total")
             or 0
         )
-        paid_settlement_amount = (
+        now = timezone.now()
+
+        current_month = _month_start(timezone.localdate())
+        month_keys: list[str] = []
+        month_metrics: dict[str, dict] = {}
+        month_count = 6
+        for offset in range(month_count - 1, -1, -1):
+            month_date = _shift_month(current_month, -offset)
+            key = month_date.strftime("%Y-%m")
+            month_keys.append(key)
+            month_metrics[key] = {
+                "month": key,
+                "order_count": 0,
+                "paid_order_count": 0,
+                "order_amount": 0,
+                "paid_amount": 0,
+                "refund_amount": 0,
+                "return_request_count": 0,
+                "new_user_count": 0,
+                "inquiry_count": 0,
+                "paid_settlement_count": 0,
+                "paid_settlement_amount": 0,
+            }
+
+        def assign_monthly(rows, field_mappings: dict[str, str]):
+            for row in rows:
+                month_value = row.get("month")
+                if not month_value:
+                    continue
+                month_date = month_value.date() if hasattr(month_value, "date") else month_value
+                key = month_date.strftime("%Y-%m")
+                if key not in month_metrics:
+                    continue
+                target = month_metrics[key]
+                for source, target_key in field_mappings.items():
+                    target[target_key] = int(row.get(source) or 0)
+
+        assign_monthly(
+            orders.annotate(month=TruncMonth("created_at")).values("month").annotate(
+                order_count=Count("id"),
+                paid_order_count=Count("id", filter=Q(payment_status=Order.PaymentStatus.APPROVED)),
+                order_amount=Coalesce(Sum("total_amount"), 0),
+                paid_amount=Coalesce(Sum("total_amount", filter=Q(payment_status=Order.PaymentStatus.APPROVED)), 0),
+                refund_amount=Coalesce(
+                    Sum(
+                        "total_amount",
+                        filter=Q(status__in=[Order.Status.REFUNDED, Order.Status.PARTIAL_REFUNDED]),
+                    ),
+                    0,
+                ),
+            ),
+            {
+                "order_count": "order_count",
+                "paid_order_count": "paid_order_count",
+                "order_amount": "order_amount",
+                "paid_amount": "paid_amount",
+                "refund_amount": "refund_amount",
+            },
+        )
+
+        assign_monthly(
+            ReturnRequest.objects.annotate(month=TruncMonth("requested_at")).values("month").annotate(
+                return_request_count=Count("id")
+            ),
+            {"return_request_count": "return_request_count"},
+        )
+
+        assign_monthly(
+            User.objects.filter(is_staff=False).annotate(month=TruncMonth("created_at")).values("month").annotate(
+                new_user_count=Count("id")
+            ),
+            {"new_user_count": "new_user_count"},
+        )
+
+        assign_monthly(
+            OneToOneInquiry.objects.annotate(month=TruncMonth("created_at")).values("month").annotate(
+                inquiry_count=Count("id")
+            ),
+            {"inquiry_count": "inquiry_count"},
+        )
+
+        assign_monthly(
+            SettlementRecord.objects.filter(paid_at__isnull=False)
+            .annotate(month=TruncMonth("paid_at"))
+            .values("month")
+            .annotate(
+                paid_settlement_count=Count("id"),
+                paid_settlement_amount=Coalesce(Sum("settlement_amount"), 0),
+            ),
+            {
+                "paid_settlement_count": "paid_settlement_count",
+                "paid_settlement_amount": "paid_settlement_amount",
+            },
+        )
+
+        current_month_key = current_month.strftime("%Y-%m")
+        current_month_metrics = month_metrics.get(current_month_key, {})
+
+        shipping_pending_count = orders.filter(
+            payment_status=Order.PaymentStatus.APPROVED,
+            shipping_status__in=[Order.ShippingStatus.READY, Order.ShippingStatus.PREPARING],
+        ).count()
+
+        paid_settlement_amount = int(
             settlements.filter(status=SettlementRecord.Status.PAID)
             .aggregate(total=Coalesce(Sum("settlement_amount"), 0))
             .get("total")
@@ -215,14 +456,26 @@ class AdminDashboardAPIView(APIView):
 
         data = {
             "summary": {
-                "total_orders": orders.count(),
-                "paid_orders": paid_orders.count(),
-                "total_order_amount": int(total_order_amount),
-                "total_paid_amount": int(total_paid_amount),
-                "today_paid_amount": int(today_paid_amount),
+                "current_month": current_month_key,
+                "this_month_order_count": int(current_month_metrics.get("order_count", 0)),
+                "this_month_paid_order_count": int(current_month_metrics.get("paid_order_count", 0)),
+                "this_month_order_amount": int(current_month_metrics.get("order_amount", 0)),
+                "this_month_paid_amount": int(current_month_metrics.get("paid_amount", 0)),
+                "this_month_refund_amount": int(current_month_metrics.get("refund_amount", 0)),
+                "this_month_new_user_count": int(current_month_metrics.get("new_user_count", 0)),
+                "this_month_inquiry_count": int(current_month_metrics.get("inquiry_count", 0)),
+                "this_month_paid_settlement_amount": int(current_month_metrics.get("paid_settlement_amount", 0)),
                 "shipping_pending_count": shipping_pending_count,
                 "shipping_shipped_count": orders.filter(shipping_status=Order.ShippingStatus.SHIPPED).count(),
                 "shipping_delivered_count": orders.filter(shipping_status=Order.ShippingStatus.DELIVERED).count(),
+                "open_order_count": orders.filter(
+                    payment_status=Order.PaymentStatus.APPROVED,
+                    shipping_status__in=[
+                        Order.ShippingStatus.READY,
+                        Order.ShippingStatus.PREPARING,
+                        Order.ShippingStatus.SHIPPED,
+                    ],
+                ).count(),
                 "open_inquiry_count": OneToOneInquiry.objects.filter(status=OneToOneInquiry.Status.OPEN).count(),
                 "overdue_inquiry_count": OneToOneInquiry.objects.filter(
                     status=OneToOneInquiry.Status.OPEN,
@@ -233,29 +486,35 @@ class AdminDashboardAPIView(APIView):
                 "open_return_count": ReturnRequest.objects.filter(status__in=open_return_statuses).count(),
                 "completed_return_count": ReturnRequest.objects.filter(status=ReturnRequest.Status.REFUNDED).count(),
                 "pending_settlement_amount": int(pending_settlement_amount),
-                "paid_settlement_amount": int(paid_settlement_amount),
+                "paid_settlement_amount": paid_settlement_amount,
             },
-            "recent_orders": AdminOrderSerializer(
-                Order.objects.select_related("user", "settlement_record").prefetch_related("items", "return_requests").order_by("-created_at")[:12],
-                many=True,
-            ).data,
-            "recent_inquiries": AdminInquirySerializer(
-                OneToOneInquiry.objects.select_related("user", "assigned_admin").order_by("-created_at")[:12],
-                many=True,
-            ).data,
-            "recent_reviews": AdminReviewSerializer(
-                Review.objects.select_related("user", "product").prefetch_related("images").order_by("-created_at")[:12],
-                many=True,
-                context={"request": request},
-            ).data,
-            "recent_returns": AdminReturnRequestSerializer(
-                ReturnRequest.objects.select_related("order", "user").order_by("-requested_at")[:12],
-                many=True,
-            ).data,
-            "recent_settlements": AdminSettlementSerializer(
-                SettlementRecord.objects.select_related("order", "order__user").order_by("-created_at")[:12],
-                many=True,
-            ).data,
+            "monthly_metrics": [month_metrics[key] for key in month_keys],
+            "status_sectors": {
+                "shipping": {
+                    "ready": orders.filter(shipping_status=Order.ShippingStatus.READY).count(),
+                    "preparing": orders.filter(shipping_status=Order.ShippingStatus.PREPARING).count(),
+                    "shipped": orders.filter(shipping_status=Order.ShippingStatus.SHIPPED).count(),
+                    "delivered": orders.filter(shipping_status=Order.ShippingStatus.DELIVERED).count(),
+                },
+                "returns": {
+                    "requested": ReturnRequest.objects.filter(status=ReturnRequest.Status.REQUESTED).count(),
+                    "approved": ReturnRequest.objects.filter(status=ReturnRequest.Status.APPROVED).count(),
+                    "refunding": ReturnRequest.objects.filter(status=ReturnRequest.Status.REFUNDING).count(),
+                    "refunded": ReturnRequest.objects.filter(status=ReturnRequest.Status.REFUNDED).count(),
+                    "rejected": ReturnRequest.objects.filter(status=ReturnRequest.Status.REJECTED).count(),
+                },
+                "inquiries": {
+                    "open": OneToOneInquiry.objects.filter(status=OneToOneInquiry.Status.OPEN).count(),
+                    "answered": OneToOneInquiry.objects.filter(status=OneToOneInquiry.Status.ANSWERED).count(),
+                    "closed": OneToOneInquiry.objects.filter(status=OneToOneInquiry.Status.CLOSED).count(),
+                },
+                "settlements": {
+                    "pending": settlements.filter(status=SettlementRecord.Status.PENDING).count(),
+                    "hold": settlements.filter(status=SettlementRecord.Status.HOLD).count(),
+                    "scheduled": settlements.filter(status=SettlementRecord.Status.SCHEDULED).count(),
+                    "paid": settlements.filter(status=SettlementRecord.Status.PAID).count(),
+                },
+            },
         }
         return success_response(data)
 
@@ -279,6 +538,7 @@ class AdminOrderListAPIView(APIView):
                 | Q(user__email__icontains=q)
                 | Q(user__name__icontains=q)
                 | Q(road_address__icontains=q)
+                | Q(jibun_address__icontains=q)
                 | Q(detail_address__icontains=q)
             )
 
@@ -321,6 +581,12 @@ class AdminOrderUpdateAPIView(APIView):
         now = timezone.now()
 
         for field in (
+            "recipient",
+            "phone",
+            "postal_code",
+            "road_address",
+            "jibun_address",
+            "detail_address",
             "status",
             "payment_status",
             "shipping_status",
@@ -1025,6 +1291,32 @@ class AdminHomeBannerDetailAPIView(APIView):
         return success_response(message="배너가 삭제되었습니다.")
 
 
+class AdminProductMetaAPIView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, *args, **kwargs):
+        badge_options = [
+            {"code": code, "label": label}
+            for code, label in ProductBadge.BadgeType.choices
+        ]
+        tax_status_options = [
+            {"code": code, "label": label}
+            for code, label in Product.TaxStatus.choices
+        ]
+        category_options = list(
+            Category.objects.filter(is_active=True)
+            .order_by("name")
+            .values("id", "name", "slug")
+        )
+        return success_response(
+            {
+                "badge_options": badge_options,
+                "tax_status_options": tax_status_options,
+                "category_options": category_options,
+            }
+        )
+
+
 class AdminProductListCreateAPIView(APIView):
     permission_classes = [IsAdminUser]
 
@@ -1033,7 +1325,15 @@ class AdminProductListCreateAPIView(APIView):
 
         q = request.query_params.get("q", "").strip()
         if q:
-            query_filter = Q(name__icontains=q) | Q(one_line__icontains=q) | Q(description__icontains=q)
+            query_filter = (
+                Q(name__icontains=q)
+                | Q(one_line__icontains=q)
+                | Q(description__icontains=q)
+                | Q(sku__icontains=q)
+                | Q(manufacturer__icontains=q)
+                | Q(origin_country__icontains=q)
+                | Q(search_keywords__icontains=q)
+            )
             if q.isdigit():
                 query_filter |= Q(id=int(q))
             queryset = queryset.filter(query_filter)
@@ -1041,6 +1341,10 @@ class AdminProductListCreateAPIView(APIView):
         is_active = request.query_params.get("is_active")
         if is_active in {"true", "false"}:
             queryset = queryset.filter(is_active=(is_active == "true"))
+
+        category_id = request.query_params.get("category_id")
+        if category_id and str(category_id).isdigit():
+            queryset = queryset.filter(category_id=int(category_id))
 
         limit = request.query_params.get("limit", "200")
         try:
@@ -1065,11 +1369,43 @@ class AdminProductListCreateAPIView(APIView):
                 "판매가와 정상가를 입력해주세요.",
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
+        sku = (payload.get("sku") or "").strip() or None
+        if sku and Product.objects.filter(sku=sku).exists():
+            return error_response(
+                "DUPLICATE_PRODUCT_SKU",
+                "이미 사용 중인 상품관리코드(SKU)입니다.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        category = None
+        if "category_id" in payload:
+            category_id = payload.get("category_id")
+            if category_id:
+                category = Category.objects.filter(id=category_id, is_active=True).first()
+                if not category:
+                    return error_response(
+                        "INVALID_CATEGORY",
+                        "유효한 카테고리를 선택해주세요.",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
 
         product = Product.objects.create(
+            category=category,
+            sku=sku,
             name=name,
             one_line=(payload.get("one_line") or "").strip(),
             description=(payload.get("description") or "").strip(),
+            intake=(payload.get("intake") or "").strip(),
+            target=(payload.get("target") or "").strip(),
+            manufacturer=(payload.get("manufacturer") or "").strip(),
+            origin_country=(payload.get("origin_country") or "").strip(),
+            tax_status=payload.get("tax_status", Product.TaxStatus.TAXABLE),
+            delivery_fee=payload.get("delivery_fee", 3000),
+            free_shipping_amount=payload.get("free_shipping_amount", 50000),
+            search_keywords=payload.get("search_keywords", []),
+            release_date=payload.get("release_date"),
+            display_start_at=payload.get("display_start_at"),
+            display_end_at=payload.get("display_end_at"),
             price=payload["price"],
             original_price=payload["original_price"],
             stock=payload.get("stock", 0),
@@ -1080,9 +1416,11 @@ class AdminProductListCreateAPIView(APIView):
         if badge_types:
             _set_product_badges(product, badge_types)
 
-        thumbnail_file = request.FILES.get("thumbnail")
-        if thumbnail_file:
-            ProductImage.objects.create(product=product, image=thumbnail_file, is_thumbnail=True, sort_order=0)
+        _sync_product_images(
+            product,
+            thumbnail_file=request.FILES.get("thumbnail"),
+            image_files=request.FILES.getlist("images"),
+        )
 
         refreshed = Product.objects.prefetch_related("badges", "images").get(id=product.id)
         return success_response(
@@ -1102,7 +1440,27 @@ class AdminProductDetailAPIView(APIView):
         payload = serializer.validated_data
 
         updated_fields = ["updated_at"]
-        for field in ("name", "one_line", "description", "price", "original_price", "stock", "is_active"):
+        field_names = (
+            "name",
+            "one_line",
+            "description",
+            "intake",
+            "target",
+            "manufacturer",
+            "origin_country",
+            "tax_status",
+            "delivery_fee",
+            "free_shipping_amount",
+            "search_keywords",
+            "release_date",
+            "display_start_at",
+            "display_end_at",
+            "price",
+            "original_price",
+            "stock",
+            "is_active",
+        )
+        for field in field_names:
             if field in payload:
                 value = payload[field]
                 if field == "name":
@@ -1113,23 +1471,57 @@ class AdminProductDetailAPIView(APIView):
                             "상품명을 입력해주세요.",
                             status_code=status.HTTP_400_BAD_REQUEST,
                         )
+                if field in {"description", "one_line", "intake", "target", "manufacturer", "origin_country"}:
+                    value = str(value).strip()
                 setattr(product, field, value)
                 updated_fields.append(field)
+
+        if "sku" in payload:
+            next_sku = (payload.get("sku") or "").strip() or None
+            if next_sku and Product.objects.exclude(id=product.id).filter(sku=next_sku).exists():
+                return error_response(
+                    "DUPLICATE_PRODUCT_SKU",
+                    "이미 사용 중인 상품관리코드(SKU)입니다.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+            product.sku = next_sku
+            updated_fields.append("sku")
+
+        if "category_id" in payload:
+            category_id = payload.get("category_id")
+            if category_id is None:
+                product.category = None
+            else:
+                category = Category.objects.filter(id=category_id, is_active=True).first()
+                if not category:
+                    return error_response(
+                        "INVALID_CATEGORY",
+                        "유효한 카테고리를 선택해주세요.",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+                product.category = category
+            updated_fields.append("category")
 
         if "badge_types" in payload:
             _set_product_badges(product, payload.get("badge_types", []))
 
         thumbnail_file = request.FILES.get("thumbnail")
-        if thumbnail_file:
-            thumbnail = product.images.filter(is_thumbnail=True).order_by("id").first()
-            if thumbnail:
-                thumbnail.image = thumbnail_file
-                thumbnail.sort_order = 0
-                thumbnail.save(update_fields=["image", "sort_order"])
-            else:
-                ProductImage.objects.create(product=product, image=thumbnail_file, is_thumbnail=True, sort_order=0)
+        image_files = request.FILES.getlist("images")
+        delete_image_ids = payload.get("delete_image_ids", [])
+        has_thumbnail_image_id = "thumbnail_image_id" in payload
+        thumbnail_image_id = payload.get("thumbnail_image_id") if has_thumbnail_image_id else None
 
-        if len(updated_fields) == 1 and "badge_types" not in payload and not thumbnail_file:
+        has_image_update = bool(thumbnail_file or image_files or delete_image_ids or has_thumbnail_image_id)
+        if has_image_update:
+            _sync_product_images(
+                product,
+                thumbnail_file=thumbnail_file,
+                image_files=image_files,
+                delete_image_ids=delete_image_ids,
+                thumbnail_image_id=thumbnail_image_id,
+            )
+
+        if len(updated_fields) == 1 and "badge_types" not in payload and not has_image_update:
             return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
 
         product.save(update_fields=list(dict.fromkeys(updated_fields)))

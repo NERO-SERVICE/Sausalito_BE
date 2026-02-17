@@ -46,6 +46,7 @@ class Order(models.Model):
     phone = models.CharField(max_length=20)
     postal_code = models.CharField(max_length=10)
     road_address = models.CharField(max_length=255)
+    jibun_address = models.CharField(max_length=255, blank=True)
     detail_address = models.CharField(max_length=255, blank=True)
 
     payment_status = models.CharField(max_length=24, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID)

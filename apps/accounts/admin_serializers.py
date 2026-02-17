@@ -38,6 +38,7 @@ class AdminOrderSerializer(serializers.ModelSerializer):
             "phone",
             "postal_code",
             "road_address",
+            "jibun_address",
             "detail_address",
             "courier_name",
             "tracking_no",
@@ -67,6 +68,12 @@ class AdminOrderSerializer(serializers.ModelSerializer):
 
 
 class AdminOrderUpdateSerializer(serializers.Serializer):
+    recipient = serializers.CharField(max_length=100, required=False)
+    phone = serializers.CharField(max_length=20, required=False)
+    postal_code = serializers.CharField(max_length=10, required=False)
+    road_address = serializers.CharField(max_length=255, required=False)
+    jibun_address = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    detail_address = serializers.CharField(max_length=255, required=False, allow_blank=True)
     status = serializers.ChoiceField(choices=Order.Status.choices, required=False)
     payment_status = serializers.ChoiceField(choices=Order.PaymentStatus.choices, required=False)
     shipping_status = serializers.ChoiceField(choices=Order.ShippingStatus.choices, required=False)
@@ -209,6 +216,10 @@ class AdminSettlementSerializer(serializers.ModelSerializer):
     order_created_at = serializers.DateTimeField(source="order.created_at", read_only=True)
     order_payment_status = serializers.CharField(source="order.payment_status", read_only=True)
     order_shipping_status = serializers.CharField(source="order.shipping_status", read_only=True)
+    order_subtotal_amount = serializers.IntegerField(source="order.subtotal_amount", read_only=True)
+    order_shipping_fee = serializers.IntegerField(source="order.shipping_fee", read_only=True)
+    order_discount_amount = serializers.IntegerField(source="order.discount_amount", read_only=True)
+    order_total_amount = serializers.IntegerField(source="order.total_amount", read_only=True)
     user_email = serializers.CharField(source="order.user.email", default="", read_only=True)
 
     class Meta:
@@ -231,6 +242,10 @@ class AdminSettlementSerializer(serializers.ModelSerializer):
             "order_created_at",
             "order_payment_status",
             "order_shipping_status",
+            "order_subtotal_amount",
+            "order_shipping_fee",
+            "order_discount_amount",
+            "order_total_amount",
             "created_at",
             "updated_at",
         )
@@ -373,18 +388,49 @@ class AdminBannerUpsertSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(required=False)
 
 
+class AdminProductImageSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductImage
+        fields = ("id", "image_url", "is_thumbnail", "sort_order")
+
+    def get_image_url(self, obj: ProductImage) -> str:
+        if not has_valid_catalog_image_file(obj.image):
+            return ""
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.image.url)
+        return obj.image.url
+
+
 class AdminProductManageSerializer(serializers.ModelSerializer):
     thumbnail_url = serializers.SerializerMethodField()
+    images = serializers.SerializerMethodField()
     badge_types = serializers.SerializerMethodField()
+    category_id = serializers.IntegerField(source="category.id", read_only=True, allow_null=True)
     category_name = serializers.CharField(source="category.name", read_only=True, default="")
 
     class Meta:
         model = Product
         fields = (
             "id",
+            "category_id",
+            "sku",
             "name",
             "one_line",
             "description",
+            "intake",
+            "target",
+            "manufacturer",
+            "origin_country",
+            "tax_status",
+            "delivery_fee",
+            "free_shipping_amount",
+            "search_keywords",
+            "release_date",
+            "display_start_at",
+            "display_end_at",
             "price",
             "original_price",
             "stock",
@@ -392,6 +438,7 @@ class AdminProductManageSerializer(serializers.ModelSerializer):
             "category_name",
             "badge_types",
             "thumbnail_url",
+            "images",
             "created_at",
             "updated_at",
         )
@@ -413,11 +460,32 @@ class AdminProductManageSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(thumbnail.image.url)
         return thumbnail.image.url
 
+    def get_images(self, obj: Product) -> list[dict]:
+        rows = [row for row in obj.images.all() if has_valid_catalog_image_file(row.image)]
+        return AdminProductImageSerializer(rows, many=True, context=self.context).data
+
 
 class AdminProductUpsertSerializer(serializers.Serializer):
+    category_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    sku = serializers.CharField(max_length=80, required=False, allow_blank=True)
     name = serializers.CharField(max_length=255, required=False, allow_blank=False)
     one_line = serializers.CharField(required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
+    intake = serializers.CharField(required=False, allow_blank=True)
+    target = serializers.CharField(required=False, allow_blank=True)
+    manufacturer = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    origin_country = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    tax_status = serializers.ChoiceField(choices=Product.TaxStatus.choices, required=False)
+    delivery_fee = serializers.IntegerField(required=False, min_value=0)
+    free_shipping_amount = serializers.IntegerField(required=False, min_value=0)
+    search_keywords = serializers.ListField(
+        child=serializers.CharField(max_length=50),
+        required=False,
+        allow_empty=True,
+    )
+    release_date = serializers.DateField(required=False, allow_null=True)
+    display_start_at = serializers.DateTimeField(required=False, allow_null=True)
+    display_end_at = serializers.DateTimeField(required=False, allow_null=True)
     price = serializers.IntegerField(required=False, min_value=0)
     original_price = serializers.IntegerField(required=False, min_value=0)
     stock = serializers.IntegerField(required=False, min_value=0)
@@ -427,6 +495,21 @@ class AdminProductUpsertSerializer(serializers.Serializer):
         required=False,
         allow_empty=True,
     )
+    delete_image_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=True,
+    )
+    thumbnail_image_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+    def validate(self, attrs):
+        display_start_at = attrs.get("display_start_at")
+        display_end_at = attrs.get("display_end_at")
+        if display_start_at and display_end_at and display_end_at < display_start_at:
+            raise serializers.ValidationError(
+                {"display_end_at": "노출 종료일시는 노출 시작일시보다 빠를 수 없습니다."}
+            )
+        return attrs
 
 
 class AdminUserManageSerializer(serializers.ModelSerializer):

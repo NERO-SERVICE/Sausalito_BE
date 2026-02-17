@@ -42,6 +42,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "phone",
             "postal_code",
             "road_address",
+            "jibun_address",
             "detail_address",
             "courier_name",
             "tracking_no",
@@ -58,6 +59,7 @@ class OrderCreateSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=20)
     postal_code = serializers.CharField(max_length=10)
     road_address = serializers.CharField(max_length=255)
+    jibun_address = serializers.CharField(max_length=255, required=False, allow_blank=True)
     detail_address = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
     def create(self, validated_data):
@@ -97,6 +99,7 @@ class OrderCreateSerializer(serializers.Serializer):
                 phone=validated_data["phone"],
                 postal_code=validated_data["postal_code"],
                 road_address=validated_data["road_address"],
+                jibun_address=validated_data.get("jibun_address", ""),
                 detail_address=validated_data.get("detail_address", ""),
             )
 

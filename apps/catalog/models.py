@@ -25,6 +25,11 @@ class Category(models.Model):
 
 
 class Product(models.Model):
+    class TaxStatus(models.TextChoices):
+        TAXABLE = "TAXABLE", "과세"
+        ZERO = "ZERO", "영세"
+        EXEMPT = "EXEMPT", "면세"
+
     category = models.ForeignKey(
         Category,
         on_delete=models.SET_NULL,
@@ -32,11 +37,20 @@ class Product(models.Model):
         blank=True,
         related_name="products",
     )
+    sku = models.CharField(max_length=80, unique=True, null=True, blank=True)
     name = models.CharField(max_length=255)
     one_line = models.CharField(max_length=255, blank=True)
     description = models.TextField(blank=True)
     intake = models.TextField(blank=True)
     target = models.TextField(blank=True)
+    manufacturer = models.CharField(max_length=120, blank=True)
+    origin_country = models.CharField(max_length=120, blank=True)
+    tax_status = models.CharField(max_length=20, choices=TaxStatus.choices, default=TaxStatus.TAXABLE)
+    delivery_fee = models.PositiveIntegerField(default=3000)
+    free_shipping_amount = models.PositiveIntegerField(default=50000)
+    display_start_at = models.DateTimeField(null=True, blank=True)
+    display_end_at = models.DateTimeField(null=True, blank=True)
+    search_keywords = models.JSONField(default=list, blank=True)
     ingredients = models.JSONField(default=list, blank=True)
     cautions = models.JSONField(default=list, blank=True)
     faq = models.JSONField(default=list, blank=True)
