@@ -28,6 +28,7 @@ from .admin_views import (
 from .views import (
     HealthCheckAPIView,
     InquiryListCreateAPIView,
+    KakaoAuthorizeUrlAPIView,
     KakaoCallbackAPIView,
     LoginAPIView,
     LogoutAPIView,
@@ -35,6 +36,7 @@ from .views import (
     MyPageDashboardAPIView,
     PasswordChangeAPIView,
     RecentViewedProductAPIView,
+    RegisterAPIView,
     RefreshAPIView,
     UserWithdrawAPIView,
     WishlistAPIView,
@@ -44,6 +46,8 @@ from .views import (
 urlpatterns = [
     path("health/", HealthCheckAPIView.as_view(), name="health-check"),
     path("auth/login", LoginAPIView.as_view(), name="auth-login"),
+    path("auth/register", RegisterAPIView.as_view(), name="auth-register"),
+    path("auth/kakao/authorize-url", KakaoAuthorizeUrlAPIView.as_view(), name="auth-kakao-authorize-url"),
     path("auth/kakao/callback", KakaoCallbackAPIView.as_view(), name="auth-kakao-callback"),
     path("auth/refresh", RefreshAPIView.as_view(), name="auth-refresh"),
     path("auth/logout", LogoutAPIView.as_view(), name="auth-logout"),

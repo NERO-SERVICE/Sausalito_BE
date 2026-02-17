@@ -6,6 +6,7 @@ from rest_framework import serializers
 
 from .admin_security import get_admin_permissions, get_admin_role
 from .models import (
+    Address,
     DepositTransaction,
     OneToOneInquiry,
     PointTransaction,
@@ -81,6 +82,62 @@ class KakaoCallbackSerializer(serializers.Serializer):
     code = serializers.CharField()
     redirect_uri = serializers.URLField(required=False, allow_blank=True)
     state = serializers.CharField(required=False, allow_blank=True)
+
+
+class KakaoAuthorizeUrlSerializer(serializers.Serializer):
+    redirect_uri = serializers.URLField(required=False, allow_blank=True)
+    state = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
+class RegisterSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=8)
+    password_confirm = serializers.CharField(write_only=True, min_length=8)
+    name = serializers.CharField(max_length=100)
+    phone = serializers.CharField(max_length=20)
+    recipient = serializers.CharField(max_length=100)
+    recipient_phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    postal_code = serializers.CharField(max_length=10)
+    road_address = serializers.CharField(max_length=255)
+    detail_address = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+    def validate_email(self, value):
+        email = str(value).strip().lower()
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError("이미 사용 중인 이메일입니다.")
+        return email
+
+    def validate(self, attrs):
+        password = attrs["password"]
+        password_confirm = attrs["password_confirm"]
+        if password != password_confirm:
+            raise serializers.ValidationError({"password_confirm": "비밀번호 확인이 일치하지 않습니다."})
+        validate_password(password)
+        return attrs
+
+    def create(self, validated_data):
+        data = dict(validated_data)
+        data.pop("password_confirm", None)
+        recipient_phone = data.pop("recipient_phone", "").strip() or data["phone"]
+        detail_address = data.pop("detail_address", "").strip()
+        password = data.pop("password")
+
+        user = User.objects.create_user(
+            email=data["email"],
+            password=password,
+            name=data["name"],
+            phone=data["phone"],
+        )
+        Address.objects.create(
+            user=user,
+            recipient=data["recipient"],
+            phone=recipient_phone,
+            postal_code=data["postal_code"],
+            road_address=data["road_address"],
+            detail_address=detail_address,
+            is_default=True,
+        )
+        return user
 
 
 class PasswordChangeSerializer(serializers.Serializer):

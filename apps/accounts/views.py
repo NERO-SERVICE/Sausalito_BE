@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib.auth import login as django_login
@@ -37,6 +38,7 @@ from .models import (
 )
 from .serializers import (
     DepositTransactionSerializer,
+    KakaoAuthorizeUrlSerializer,
     KakaoCallbackSerializer,
     LoginSerializer,
     LogoutSerializer,
@@ -45,6 +47,7 @@ from .serializers import (
     PasswordChangeSerializer,
     PointTransactionSerializer,
     RecentViewedCreateSerializer,
+    RegisterSerializer,
     TokenRefreshRequestSerializer,
     UserWithdrawSerializer,
     UserCouponSerializer,
@@ -84,6 +87,80 @@ class LoginAPIView(APIView):
                 "tokens": issue_tokens_for_user(user),
             },
             message="로그인되었습니다.",
+        )
+
+
+class RegisterAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            user = serializer.save()
+            django_login(request, user)
+
+        return success_response(
+            {
+                "user": UserMeSerializer(user).data,
+                "tokens": issue_tokens_for_user(user),
+            },
+            message="회원가입이 완료되었습니다.",
+            status_code=status.HTTP_201_CREATED,
+        )
+
+
+class KakaoAuthorizeUrlAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        serializer = KakaoAuthorizeUrlSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+
+        if not settings.KAKAO_REST_API_KEY:
+            return error_response(
+                code="KAKAO_CONFIG_MISSING",
+                message="카카오 OAuth 설정이 비어 있습니다.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        redirect_uri = serializer.validated_data.get("redirect_uri") or settings.KAKAO_REDIRECT_URI
+        if not redirect_uri:
+            return error_response(
+                code="KAKAO_REDIRECT_URI_REQUIRED",
+                message="카카오 redirect_uri 설정이 필요합니다.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        allowed_redirect_uris = settings.KAKAO_ALLOWED_REDIRECT_URIS
+        if allowed_redirect_uris and redirect_uri not in allowed_redirect_uris:
+            return error_response(
+                code="INVALID_REDIRECT_URI",
+                message="허용되지 않은 redirect_uri 입니다.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        scopes = ["profile_nickname"]
+        if settings.KAKAO_INCLUDE_EMAIL_SCOPE:
+            scopes.append("account_email")
+
+        query = {
+            "response_type": "code",
+            "client_id": settings.KAKAO_REST_API_KEY,
+            "redirect_uri": redirect_uri,
+            "scope": ",".join(scopes),
+        }
+        state_value = serializer.validated_data.get("state")
+        if state_value:
+            query["state"] = state_value
+
+        authorize_url = f"https://kauth.kakao.com/oauth/authorize?{urlencode(query)}"
+        return success_response(
+            {
+                "authorize_url": authorize_url,
+                "redirect_uri": redirect_uri,
+            }
         )
 
 

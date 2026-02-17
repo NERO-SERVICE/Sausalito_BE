@@ -586,6 +586,17 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/auth/kakao/authorize-url:
+    get:
+      operationId: v1_auth_kakao_authorize_url_retrieve
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
   /api/v1/auth/kakao/callback:
     post:
       operationId: v1_auth_kakao_callback_create
@@ -621,6 +632,17 @@ paths:
   /api/v1/auth/refresh:
     post:
       operationId: v1_auth_refresh_create
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/v1/auth/register:
+    post:
+      operationId: v1_auth_register_create
       tags:
       - v1
       security:
