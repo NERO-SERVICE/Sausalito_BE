@@ -1264,8 +1264,13 @@ components:
           type: object
           additionalProperties: {}
           readOnly: true
+        coupon_benefit:
+          type: object
+          additionalProperties: {}
+          readOnly: true
       required:
       - badges
+      - coupon_benefit
       - id
       - images
       - name
