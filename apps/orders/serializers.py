@@ -5,6 +5,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from apps.cart.models import Cart
+from apps.catalog.models import Product, ProductOption
 
 from .models import Order, OrderItem
 
@@ -61,27 +62,79 @@ class OrderCreateSerializer(serializers.Serializer):
     road_address = serializers.CharField(max_length=255)
     jibun_address = serializers.CharField(max_length=255, required=False, allow_blank=True)
     detail_address = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    buy_now_product_id = serializers.IntegerField(min_value=1, required=False)
+    buy_now_option_id = serializers.IntegerField(min_value=1, required=False)
+    buy_now_quantity = serializers.IntegerField(min_value=1, required=False)
+
+    def validate(self, attrs):
+        buy_now_product_id = attrs.get("buy_now_product_id")
+        buy_now_option_id = attrs.get("buy_now_option_id")
+        buy_now_quantity = attrs.get("buy_now_quantity")
+        if buy_now_option_id and not buy_now_product_id:
+            raise serializers.ValidationError({"buy_now_option_id": "buy_now_product_id와 함께 전달되어야 합니다."})
+        if buy_now_quantity and not buy_now_product_id:
+            raise serializers.ValidationError({"buy_now_quantity": "buy_now_product_id와 함께 전달되어야 합니다."})
+        return attrs
 
     def create(self, validated_data):
         user = self.context["request"].user
-        cart, _ = Cart.objects.get_or_create(user=user)
-        cart_items = list(cart.items.select_related("product", "product_option").order_by("id"))
-        if not cart_items:
-            raise serializers.ValidationError("장바구니가 비어 있습니다.")
+        cart = None
+        purchase_items: list[dict[str, object]] = []
+        buy_now_product_id = validated_data.get("buy_now_product_id")
 
-        subtotal = 0
-        for cart_item in cart_items:
-            product = cart_item.product
-            option = cart_item.product_option
+        if buy_now_product_id:
+            product = Product.objects.filter(id=buy_now_product_id).first()
             if not product or not product.is_active:
-                raise serializers.ValidationError(f"구매할 수 없는 상품이 포함되어 있습니다. ({cart_item.id})")
-            if product.stock < cart_item.quantity:
+                raise serializers.ValidationError({"buy_now_product_id": "구매할 수 없는 상품입니다."})
+
+            option = None
+            buy_now_option_id = validated_data.get("buy_now_option_id")
+            if buy_now_option_id:
+                option = ProductOption.objects.filter(id=buy_now_option_id, product=product, is_active=True).first()
+                if option is None:
+                    raise serializers.ValidationError({"buy_now_option_id": "구매할 수 없는 옵션입니다."})
+
+            quantity = int(validated_data.get("buy_now_quantity") or 1)
+            if product.stock < quantity:
                 raise serializers.ValidationError(f"상품 재고가 부족합니다. ({product.name})")
-            if option and option.stock < cart_item.quantity:
+            if option and option.stock < quantity:
                 raise serializers.ValidationError(f"옵션 재고가 부족합니다. ({option.name})")
 
             unit_price = option.price if option else product.price
-            subtotal += unit_price * cart_item.quantity
+            purchase_items.append(
+                {
+                    "product": product,
+                    "option": option,
+                    "quantity": quantity,
+                    "unit_price": unit_price,
+                }
+            )
+        else:
+            cart, _ = Cart.objects.get_or_create(user=user)
+            cart_items = list(cart.items.select_related("product", "product_option").order_by("id"))
+            if not cart_items:
+                raise serializers.ValidationError("장바구니가 비어 있습니다.")
+
+            for cart_item in cart_items:
+                product = cart_item.product
+                option = cart_item.product_option
+                if not product or not product.is_active:
+                    raise serializers.ValidationError(f"구매할 수 없는 상품이 포함되어 있습니다. ({cart_item.id})")
+                if product.stock < cart_item.quantity:
+                    raise serializers.ValidationError(f"상품 재고가 부족합니다. ({product.name})")
+                if option and option.stock < cart_item.quantity:
+                    raise serializers.ValidationError(f"옵션 재고가 부족합니다. ({option.name})")
+
+                purchase_items.append(
+                    {
+                        "product": product,
+                        "option": option,
+                        "quantity": cart_item.quantity,
+                        "unit_price": option.price if option else product.price,
+                    }
+                )
+
+        subtotal = sum(int(item["unit_price"]) * int(item["quantity"]) for item in purchase_items)
 
         shipping_fee = settings.DEFAULT_SHIPPING_FEE if subtotal < settings.FREE_SHIPPING_THRESHOLD else 0
         discount_amount = 0
@@ -104,10 +157,11 @@ class OrderCreateSerializer(serializers.Serializer):
             )
 
             order_items = []
-            for cart_item in cart_items:
-                product = cart_item.product
-                option = cart_item.product_option
-                unit_price = option.price if option else product.price
+            for item in purchase_items:
+                product = item["product"]
+                option = item["option"]
+                quantity = int(item["quantity"])
+                unit_price = int(item["unit_price"])
                 order_items.append(
                     OrderItem(
                         order=order,
@@ -117,12 +171,13 @@ class OrderCreateSerializer(serializers.Serializer):
                         product_name_snapshot=product.name,
                         option_name_snapshot=option.name if option else "",
                         unit_price=unit_price,
-                        quantity=cart_item.quantity,
-                        line_total=unit_price * cart_item.quantity,
+                        quantity=quantity,
+                        line_total=unit_price * quantity,
                     )
                 )
             OrderItem.objects.bulk_create(order_items)
 
-            cart.items.all().delete()
+            if cart is not None:
+                cart.items.all().delete()
 
         return order

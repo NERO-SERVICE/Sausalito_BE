@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -12,6 +13,7 @@ def generate_idempotency_key() -> str:
 class PaymentTransaction(models.Model):
     class Provider(models.TextChoices):
         NAVERPAY = "NAVERPAY", "NAVERPAY"
+        BANK_TRANSFER = "BANK_TRANSFER", "BANK_TRANSFER"
 
     class Status(models.TextChoices):
         READY = "READY", "READY"
@@ -48,3 +50,56 @@ class WebhookEvent(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class BankTransferRequest(models.Model):
+    class Status(models.TextChoices):
+        REQUESTED = "REQUESTED", "REQUESTED"
+        APPROVED = "APPROVED", "APPROVED"
+        REJECTED = "REJECTED", "REJECTED"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey("orders.Order", on_delete=models.CASCADE, related_name="bank_transfer_requests")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="bank_transfer_requests",
+    )
+    depositor_name = models.CharField(max_length=100)
+    depositor_phone = models.CharField(max_length=20, blank=True)
+    transfer_amount = models.PositiveIntegerField(default=0)
+    bank_name = models.CharField(max_length=100)
+    bank_account_no = models.CharField(max_length=50)
+    account_holder = models.CharField(max_length=100)
+    transfer_note = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.REQUESTED)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approved_bank_transfer_requests",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejected_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="rejected_bank_transfer_requests",
+    )
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True)
+    admin_memo = models.TextField(blank=True)
+    idempotency_key = models.CharField(max_length=64, unique=True, default=generate_idempotency_key)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["order", "status"]),
+        ]

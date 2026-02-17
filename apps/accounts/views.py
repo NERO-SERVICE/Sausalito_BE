@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import uuid
+
 from django.conf import settings
 from django.contrib.auth import login as django_login
+from django.db import transaction
 from django.db.models import Sum
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
@@ -43,6 +46,7 @@ from .serializers import (
     PointTransactionSerializer,
     RecentViewedCreateSerializer,
     TokenRefreshRequestSerializer,
+    UserWithdrawSerializer,
     UserCouponSerializer,
     UserMeSerializer,
     WishlistCreateSerializer,
@@ -160,6 +164,48 @@ class MeAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return success_response(serializer.data, message="회원 정보가 업데이트되었습니다.")
+
+
+class UserWithdrawAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = UserWithdrawSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+
+        if user.is_staff:
+            return error_response(
+                code="STAFF_WITHDRAW_NOT_ALLOWED",
+                message="관리자 계정은 해당 화면에서 탈퇴할 수 없습니다.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            now = timezone.now().strftime("%Y%m%d%H%M%S")
+            suffix = uuid.uuid4().hex[:10]
+            anonymized_email = f"withdrawn_{user.id}_{now}_{suffix}@withdrawn.local"
+            user.set_unusable_password()
+            user.is_active = False
+            user.email = anonymized_email
+            user.username = anonymized_email
+            user.name = ""
+            user.phone = ""
+            user.kakao_sub = None
+            user.save(
+                update_fields=[
+                    "password",
+                    "is_active",
+                    "email",
+                    "username",
+                    "name",
+                    "phone",
+                    "kakao_sub",
+                    "updated_at",
+                ]
+            )
+
+        return success_response(message="회원 탈퇴가 처리되었습니다.")
 
 
 def _serialize_product_rows_with_timestamp(rows, request, timestamp_key: str):

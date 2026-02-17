@@ -112,6 +112,19 @@ class PasswordChangeSerializer(serializers.Serializer):
         return user
 
 
+class UserWithdrawSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True)
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        user = request.user
+        password = attrs.get("password", "")
+        if not user.check_password(password):
+            raise serializers.ValidationError({"password": "비밀번호가 일치하지 않습니다."})
+        return attrs
+
+
 class PointTransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = PointTransaction
