@@ -32,6 +32,8 @@ from apps.accounts.models import (
     UserCoupon,
     WishlistItem,
 )
+from apps.orders.models import Order, OrderItem
+from apps.payments.models import PaymentTransaction
 from apps.reviews.models import Review, ReviewImage
 
 User = get_user_model()
@@ -329,6 +331,8 @@ class Command(BaseCommand):
 
         if options["reset"]:
             self.stdout.write("기존 데이터를 정리합니다...")
+            PaymentTransaction.objects.all().delete()
+            Order.objects.all().delete()
             OneToOneInquiry.objects.all().delete()
             RecentViewedProduct.objects.all().delete()
             WishlistItem.objects.all().delete()
@@ -355,9 +359,27 @@ class Command(BaseCommand):
             email="demo@sausalito.com",
             defaults={"username": "demo", "name": "데모유저"},
         )
-        if created:
-            demo_user.set_password("demo1234")
-            demo_user.save(update_fields=["password"])
+        demo_user.set_password("demo1234")
+        demo_user.save(update_fields=["password"])
+
+        admin_user, admin_created = User.objects.get_or_create(
+            email="admin@sausalito.com",
+            defaults={
+                "username": "admin",
+                "name": "관리자",
+                "is_staff": True,
+                "is_superuser": True,
+            },
+        )
+        admin_user.set_password("admin1234")
+        if admin_created:
+            admin_user.save(update_fields=["password"])
+        elif not admin_user.is_staff or not admin_user.is_superuser:
+            admin_user.is_staff = True
+            admin_user.is_superuser = True
+            admin_user.save(update_fields=["password", "is_staff", "is_superuser"])
+        else:
+            admin_user.save(update_fields=["password"])
 
         product_map: dict[int, Product] = {}
         for row in PRODUCTS:
@@ -517,6 +539,105 @@ class Command(BaseCommand):
             product.review_count = summary["cnt"] or 0
             product.save(update_fields=["rating_avg", "review_count", "updated_at"])
 
+        demo_order_rows = [
+            {
+                "order_no": "SAUDEMO20260217001",
+                "product_id": 1,
+                "quantity": 2,
+                "status": Order.Status.PAID,
+                "payment_status": Order.PaymentStatus.APPROVED,
+                "shipping_status": Order.ShippingStatus.READY,
+                "courier_name": "",
+                "tracking_no": "",
+                "invoice_issued_at": None,
+                "shipped_at": None,
+                "delivered_at": None,
+            },
+            {
+                "order_no": "SAUDEMO20260217002",
+                "product_id": 2,
+                "quantity": 1,
+                "status": Order.Status.PAID,
+                "payment_status": Order.PaymentStatus.APPROVED,
+                "shipping_status": Order.ShippingStatus.SHIPPED,
+                "courier_name": "CJ대한통운",
+                "tracking_no": "629500001234",
+                "invoice_issued_at": timezone.now() - timedelta(days=1, hours=4),
+                "shipped_at": timezone.now() - timedelta(days=1, hours=3),
+                "delivered_at": None,
+            },
+            {
+                "order_no": "SAUDEMO20260217003",
+                "product_id": 4,
+                "quantity": 1,
+                "status": Order.Status.PAID,
+                "payment_status": Order.PaymentStatus.APPROVED,
+                "shipping_status": Order.ShippingStatus.DELIVERED,
+                "courier_name": "한진택배",
+                "tracking_no": "812345678901",
+                "invoice_issued_at": timezone.now() - timedelta(days=4),
+                "shipped_at": timezone.now() - timedelta(days=3, hours=20),
+                "delivered_at": timezone.now() - timedelta(days=2, hours=6),
+            },
+        ]
+
+        for row in demo_order_rows:
+            product = product_map.get(row["product_id"])
+            if not product:
+                continue
+
+            subtotal = product.price * row["quantity"]
+            shipping_fee = settings.DEFAULT_SHIPPING_FEE if subtotal < settings.FREE_SHIPPING_THRESHOLD else 0
+            total = subtotal + shipping_fee
+
+            order, _ = Order.objects.update_or_create(
+                order_no=row["order_no"],
+                defaults={
+                    "user": demo_user,
+                    "status": row["status"],
+                    "payment_status": row["payment_status"],
+                    "shipping_status": row["shipping_status"],
+                    "subtotal_amount": subtotal,
+                    "shipping_fee": shipping_fee,
+                    "discount_amount": 0,
+                    "total_amount": total,
+                    "recipient": "데모유저",
+                    "phone": "010-1111-2222",
+                    "postal_code": "04524",
+                    "road_address": "서울특별시 중구 세종대로 110",
+                    "detail_address": "201호",
+                    "courier_name": row["courier_name"],
+                    "tracking_no": row["tracking_no"],
+                    "invoice_issued_at": row["invoice_issued_at"],
+                    "shipped_at": row["shipped_at"],
+                    "delivered_at": row["delivered_at"],
+                },
+            )
+
+            OrderItem.objects.filter(order=order).delete()
+            OrderItem.objects.create(
+                order=order,
+                product=product,
+                product_option=None,
+                product_id_snapshot=product.id,
+                product_name_snapshot=product.name,
+                option_name_snapshot="",
+                unit_price=product.price,
+                quantity=row["quantity"],
+                line_total=product.price * row["quantity"],
+            )
+
+            PaymentTransaction.objects.filter(order=order).delete()
+            PaymentTransaction.objects.create(
+                order=order,
+                provider=PaymentTransaction.Provider.NAVERPAY,
+                status=PaymentTransaction.Status.APPROVED,
+                payment_key=f"SEED-{order.order_no}",
+                approved_at=timezone.now() - timedelta(days=1),
+                raw_request_json={"seed": True},
+                raw_response_json={"seed": True},
+            )
+
         point_samples = [
             ("EARN", 3000, "신규 가입 적립금"),
             ("EARN", 1200, "리뷰 작성 적립"),
@@ -600,3 +721,4 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS("데모 데이터 시드가 완료되었습니다."))
         self.stdout.write("- 로그인 계정: demo@sausalito.com / demo1234")
+        self.stdout.write("- 관리자 계정: admin@sausalito.com / admin1234")

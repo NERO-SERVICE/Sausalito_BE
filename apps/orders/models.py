@@ -27,6 +27,12 @@ class Order(models.Model):
         CANCELED = "CANCELED", "CANCELED"
         FAILED = "FAILED", "FAILED"
 
+    class ShippingStatus(models.TextChoices):
+        READY = "READY", "READY"
+        PREPARING = "PREPARING", "PREPARING"
+        SHIPPED = "SHIPPED", "SHIPPED"
+        DELIVERED = "DELIVERED", "DELIVERED"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="orders")
     order_no = models.CharField(max_length=32, unique=True, default=generate_order_no)
@@ -43,6 +49,12 @@ class Order(models.Model):
     detail_address = models.CharField(max_length=255, blank=True)
 
     payment_status = models.CharField(max_length=24, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID)
+    shipping_status = models.CharField(max_length=24, choices=ShippingStatus.choices, default=ShippingStatus.READY)
+    courier_name = models.CharField(max_length=100, blank=True)
+    tracking_no = models.CharField(max_length=100, blank=True)
+    invoice_issued_at = models.DateTimeField(null=True, blank=True)
+    shipped_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

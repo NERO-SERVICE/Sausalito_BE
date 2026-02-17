@@ -16,10 +16,12 @@ from .models import (
 
 
 class UserMeSerializer(serializers.ModelSerializer):
+    isStaff = serializers.BooleanField(source="is_staff", read_only=True)
+
     class Meta:
         model = User
-        fields = ("id", "email", "username", "name", "phone", "created_at")
-        read_only_fields = ("id", "email", "username", "created_at")
+        fields = ("id", "email", "username", "name", "phone", "is_staff", "isStaff", "created_at")
+        read_only_fields = ("id", "email", "username", "is_staff", "isStaff", "created_at")
 
 
 class LoginSerializer(serializers.Serializer):
