@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.contrib.auth import login as django_login
+from django.db.models import Sum
+from django.db.models.functions import Coalesce
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -12,13 +16,35 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.common.response import error_response, success_response
+from apps.catalog.models import Product
+from apps.catalog.serializers import ProductListSerializer
+from apps.orders.models import Order
+from apps.orders.serializers import OrderSerializer
+from apps.reviews.models import Review
+from apps.reviews.serializers import ReviewListSerializer
 
+from .models import (
+    DepositTransaction,
+    OneToOneInquiry,
+    PointTransaction,
+    RecentViewedProduct,
+    UserCoupon,
+    WishlistItem,
+)
 from .serializers import (
+    DepositTransactionSerializer,
     KakaoCallbackSerializer,
     LoginSerializer,
     LogoutSerializer,
+    OneToOneInquiryReadSerializer,
+    OneToOneInquirySerializer,
+    PasswordChangeSerializer,
+    PointTransactionSerializer,
+    RecentViewedCreateSerializer,
     TokenRefreshRequestSerializer,
+    UserCouponSerializer,
     UserMeSerializer,
+    WishlistCreateSerializer,
 )
 from .services import KakaoOAuthClient
 
@@ -117,6 +143,188 @@ class MeAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return success_response(serializer.data, message="회원 정보가 업데이트되었습니다.")
+
+
+def _serialize_product_rows_with_timestamp(rows, request, timestamp_key: str):
+    serialized = []
+    for row in rows:
+        product = row.product
+        if not product or not product.is_active:
+            continue
+        product_data = ProductListSerializer(product, context={"request": request}).data
+        product_data[timestamp_key] = row.viewed_at if hasattr(row, "viewed_at") else row.created_at
+        serialized.append(product_data)
+    return serialized
+
+
+class MyPageDashboardAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+
+        total_order_count = Order.objects.filter(user=user).count()
+        orders = (
+            Order.objects.filter(user=user)
+            .prefetch_related("items")
+            .order_by("-created_at")[:20]
+        )
+        point_rows = PointTransaction.objects.filter(user=user).order_by("-created_at", "-id")[:20]
+        deposit_rows = DepositTransaction.objects.filter(user=user).order_by("-created_at", "-id")[:20]
+        coupon_rows = UserCoupon.objects.filter(user=user).order_by("-created_at", "-id")
+
+        wishlist_rows = (
+            WishlistItem.objects.filter(user=user, product__is_active=True)
+            .select_related("product")
+            .prefetch_related("product__images", "product__badges")
+            .order_by("-created_at", "-id")[:20]
+        )
+        recent_rows = (
+            RecentViewedProduct.objects.filter(user=user, product__is_active=True)
+            .select_related("product")
+            .prefetch_related("product__images", "product__badges")
+            .order_by("-viewed_at", "-id")[:20]
+        )
+        my_reviews = (
+            Review.objects.filter(user=user, status=Review.Status.VISIBLE)
+            .select_related("product")
+            .prefetch_related("images")
+            .order_by("-created_at", "-id")[:20]
+        )
+        inquiries = OneToOneInquiry.objects.filter(user=user).order_by("-created_at", "-id")[:20]
+
+        point_balance = (
+            PointTransaction.objects.filter(user=user).aggregate(total=Coalesce(Sum("amount"), 0)).get("total")
+            or 0
+        )
+        deposit_balance = (
+            DepositTransaction.objects.filter(user=user).aggregate(total=Coalesce(Sum("amount"), 0)).get("total")
+            or 0
+        )
+
+        data = {
+            "shopping": {
+                "summary": {
+                    "order_count": total_order_count,
+                    "point_balance": int(point_balance),
+                    "deposit_balance": int(deposit_balance),
+                    "coupon_count": coupon_rows.filter(is_used=False).count(),
+                },
+                "orders": OrderSerializer(orders, many=True).data,
+                "point_history": PointTransactionSerializer(point_rows, many=True).data,
+                "deposit_history": DepositTransactionSerializer(deposit_rows, many=True).data,
+                "coupon_history": UserCouponSerializer(coupon_rows, many=True).data,
+            },
+            "activity": {
+                "recent_products": _serialize_product_rows_with_timestamp(
+                    recent_rows, request, timestamp_key="viewed_at"
+                ),
+                "wishlist_products": _serialize_product_rows_with_timestamp(
+                    wishlist_rows, request, timestamp_key="wished_at"
+                ),
+                "my_reviews": ReviewListSerializer(my_reviews, many=True, context={"request": request}).data,
+            },
+            "profile": UserMeSerializer(user).data,
+            "inquiries": OneToOneInquiryReadSerializer(inquiries, many=True).data,
+        }
+        return success_response(data)
+
+
+class WishlistAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        rows = (
+            WishlistItem.objects.filter(user=request.user, product__is_active=True)
+            .select_related("product")
+            .prefetch_related("product__images", "product__badges")
+            .order_by("-created_at", "-id")
+        )
+        data = _serialize_product_rows_with_timestamp(rows, request, timestamp_key="wished_at")
+        return success_response(data)
+
+    def post(self, request, *args, **kwargs):
+        serializer = WishlistCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        product = get_object_or_404(Product, id=serializer.validated_data["product_id"], is_active=True)
+
+        row, created = WishlistItem.objects.get_or_create(user=request.user, product=product)
+        item_data = ProductListSerializer(product, context={"request": request}).data
+        item_data["wished_at"] = row.created_at
+
+        return success_response(
+            item_data,
+            message="위시리스트에 추가되었습니다." if created else "이미 위시리스트에 등록된 상품입니다.",
+            status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class WishlistDetailAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, product_id: int, *args, **kwargs):
+        deleted_count, _ = WishlistItem.objects.filter(user=request.user, product_id=product_id).delete()
+        if not deleted_count:
+            return error_response(
+                code="NOT_FOUND",
+                message="위시리스트에 없는 상품입니다.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        return success_response(message="위시리스트에서 제거되었습니다.")
+
+
+class RecentViewedProductAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        rows = (
+            RecentViewedProduct.objects.filter(user=request.user, product__is_active=True)
+            .select_related("product")
+            .prefetch_related("product__images", "product__badges")
+            .order_by("-viewed_at", "-id")
+        )
+        data = _serialize_product_rows_with_timestamp(rows, request, timestamp_key="viewed_at")
+        return success_response(data)
+
+    def post(self, request, *args, **kwargs):
+        serializer = RecentViewedCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        product = get_object_or_404(Product, id=serializer.validated_data["product_id"], is_active=True)
+
+        RecentViewedProduct.objects.update_or_create(
+            user=request.user,
+            product=product,
+            defaults={"viewed_at": timezone.now()},
+        )
+        return success_response(message="최근 본 상품에 반영되었습니다.", status_code=status.HTTP_201_CREATED)
+
+
+class InquiryListCreateAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        queryset = OneToOneInquiry.objects.filter(user=request.user).order_by("-created_at", "-id")
+        return success_response(OneToOneInquiryReadSerializer(queryset, many=True).data)
+
+    def post(self, request, *args, **kwargs):
+        serializer = OneToOneInquirySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        inquiry = serializer.save(user=request.user)
+        return success_response(
+            OneToOneInquiryReadSerializer(inquiry).data,
+            message="1:1 문의가 접수되었습니다.",
+            status_code=status.HTTP_201_CREATED,
+        )
+
+
+class PasswordChangeAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = PasswordChangeSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return success_response(message="비밀번호가 변경되었습니다.")
 
 
 class HealthCheckAPIView(APIView):

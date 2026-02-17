@@ -24,6 +24,14 @@ from apps.catalog.models import (
     ProductImage,
     ProductOption,
 )
+from apps.accounts.models import (
+    DepositTransaction,
+    OneToOneInquiry,
+    PointTransaction,
+    RecentViewedProduct,
+    UserCoupon,
+    WishlistItem,
+)
 from apps.reviews.models import Review, ReviewImage
 
 User = get_user_model()
@@ -321,6 +329,12 @@ class Command(BaseCommand):
 
         if options["reset"]:
             self.stdout.write("기존 데이터를 정리합니다...")
+            OneToOneInquiry.objects.all().delete()
+            RecentViewedProduct.objects.all().delete()
+            WishlistItem.objects.all().delete()
+            UserCoupon.objects.all().delete()
+            DepositTransaction.objects.all().delete()
+            PointTransaction.objects.all().delete()
             ReviewImage.objects.all().delete()
             Review.objects.all().delete()
             ProductOption.objects.all().delete()
@@ -502,6 +516,87 @@ class Command(BaseCommand):
             product.rating_avg = summary["avg"] or 0
             product.review_count = summary["cnt"] or 0
             product.save(update_fields=["rating_avg", "review_count", "updated_at"])
+
+        point_samples = [
+            ("EARN", 3000, "신규 가입 적립금"),
+            ("EARN", 1200, "리뷰 작성 적립"),
+            ("USE", -800, "주문 시 적립금 사용"),
+        ]
+        point_balance = 0
+        for tx_type, amount, desc in point_samples:
+            point_balance += amount
+            PointTransaction.objects.create(
+                user=demo_user,
+                tx_type=tx_type,
+                amount=amount,
+                balance_after=point_balance,
+                description=desc,
+            )
+
+        deposit_samples = [
+            ("CHARGE", 20000, "예치금 충전"),
+            ("USE", -5000, "주문 결제 사용"),
+            ("REFUND", 2000, "부분 환불"),
+        ]
+        deposit_balance = 0
+        for tx_type, amount, desc in deposit_samples:
+            deposit_balance += amount
+            DepositTransaction.objects.create(
+                user=demo_user,
+                tx_type=tx_type,
+                amount=amount,
+                balance_after=deposit_balance,
+                description=desc,
+            )
+
+        UserCoupon.objects.update_or_create(
+            user=demo_user,
+            code="WELCOME10",
+            defaults={
+                "name": "신규회원 10% 쿠폰",
+                "discount_amount": 3000,
+                "min_order_amount": 20000,
+                "is_used": False,
+                "used_at": None,
+            },
+        )
+        UserCoupon.objects.update_or_create(
+            user=demo_user,
+            code="RUNNER5000",
+            defaults={
+                "name": "러너 특가 5,000원 쿠폰",
+                "discount_amount": 5000,
+                "min_order_amount": 50000,
+                "is_used": False,
+                "used_at": None,
+            },
+        )
+
+        for product_id in [1, 2, 4]:
+            product = product_map.get(product_id)
+            if product:
+                WishlistItem.objects.get_or_create(user=demo_user, product=product)
+
+        now = timezone.now()
+        for offset, product_id in enumerate([3, 1, 2, 5]):
+            product = product_map.get(product_id)
+            if not product:
+                continue
+            row, _ = RecentViewedProduct.objects.update_or_create(
+                user=demo_user,
+                product=product,
+            )
+            row.viewed_at = now - timedelta(hours=offset * 3)
+            row.save(update_fields=["viewed_at"])
+
+        OneToOneInquiry.objects.get_or_create(
+            user=demo_user,
+            title="배송 상태가 궁금합니다.",
+            defaults={
+                "content": "주문한 상품의 현재 배송 단계를 확인하고 싶습니다.",
+                "status": OneToOneInquiry.Status.OPEN,
+            },
+        )
 
         self.stdout.write(self.style.SUCCESS("데모 데이터 시드가 완료되었습니다."))
         self.stdout.write("- 로그인 계정: demo@sausalito.com / demo1234")
