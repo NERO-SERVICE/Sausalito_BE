@@ -96,16 +96,20 @@ class AdminOrderSerializer(serializers.ModelSerializer):
     def get_payment_method(self, obj: Order) -> str:
         latest_transfer = self._get_latest_bank_transfer(obj)
         if latest_transfer:
-            source = f"{latest_transfer.transfer_note} {latest_transfer.admin_memo}".lower()
-            if "계좌이체" in source or "transfer" in source:
-                return "TRANSFER"
-            return "BANK_DEPOSIT"
+            return "BANK_TRANSFER"
 
         provider = self._get_latest_payment_provider(obj)
-        if provider == PaymentTransaction.Provider.NAVERPAY:
-            return "NAVERPAY"
         if provider == PaymentTransaction.Provider.BANK_TRANSFER:
-            return "BANK_DEPOSIT"
+            return "BANK_TRANSFER"
+        if provider:
+            return "BANK_TRANSFER"
+        if obj.payment_status in {
+            Order.PaymentStatus.READY,
+            Order.PaymentStatus.APPROVED,
+            Order.PaymentStatus.CANCELED,
+            Order.PaymentStatus.FAILED,
+        }:
+            return "BANK_TRANSFER"
         return ""
 
 

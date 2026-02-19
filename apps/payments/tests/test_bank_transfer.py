@@ -176,3 +176,17 @@ class BankTransferPaymentFlowTestCase(TestCase):
             ).count(),
             1,
         )
+
+    def test_naverpay_endpoints_are_not_available(self):
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.post(
+            "/api/v1/payments/naverpay/ready",
+            {
+                "order_no": self.order.order_no,
+                "return_url": "http://localhost:5173/pages/checkout.html",
+                "cancel_url": "http://localhost:5173/pages/checkout.html",
+                "fail_url": "http://localhost:5173/pages/checkout.html",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)

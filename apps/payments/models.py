@@ -22,7 +22,7 @@ class PaymentTransaction(models.Model):
         CANCELED = "CANCELED", "CANCELED"
 
     order = models.ForeignKey("orders.Order", on_delete=models.CASCADE, related_name="payment_transactions")
-    provider = models.CharField(max_length=20, choices=Provider.choices, default=Provider.NAVERPAY)
+    provider = models.CharField(max_length=20, choices=Provider.choices, default=Provider.BANK_TRANSFER)
     payment_key = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.READY)
     approved_at = models.DateTimeField(null=True, blank=True)

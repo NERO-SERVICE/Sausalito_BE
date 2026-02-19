@@ -661,7 +661,7 @@ class Command(BaseCommand):
             PaymentTransaction.objects.filter(order=order).delete()
             PaymentTransaction.objects.create(
                 order=order,
-                provider=PaymentTransaction.Provider.NAVERPAY,
+                provider=PaymentTransaction.Provider.BANK_TRANSFER,
                 status=PaymentTransaction.Status.APPROVED,
                 payment_key=f"SEED-{order.order_no}",
                 approved_at=timezone.now() - timedelta(days=1),

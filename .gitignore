@@ -5,6 +5,8 @@ __pycache__/
 .Python
 .env
 .env.*
+.env.local
+.env.prod
 !.env.local.example
 !.env.prod.example
 .venv/

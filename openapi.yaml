@@ -793,48 +793,6 @@ paths:
       responses:
         '200':
           description: No response body
-  /api/v1/payments/naverpay/approve:
-    post:
-      operationId: v1_payments_naverpay_approve_create
-      tags:
-      - v1
-      security:
-      - jwtAuth: []
-      - {}
-      responses:
-        '200':
-          description: No response body
-  /api/v1/payments/naverpay/cancel:
-    post:
-      operationId: v1_payments_naverpay_cancel_create
-      tags:
-      - v1
-      security:
-      - jwtAuth: []
-      responses:
-        '200':
-          description: No response body
-  /api/v1/payments/naverpay/ready:
-    post:
-      operationId: v1_payments_naverpay_ready_create
-      tags:
-      - v1
-      security:
-      - jwtAuth: []
-      responses:
-        '200':
-          description: No response body
-  /api/v1/payments/naverpay/webhook:
-    post:
-      operationId: v1_payments_naverpay_webhook_create
-      tags:
-      - v1
-      security:
-      - jwtAuth: []
-      - {}
-      responses:
-        '200':
-          description: No response body
   /api/v1/products:
     get:
       operationId: v1_products_list
