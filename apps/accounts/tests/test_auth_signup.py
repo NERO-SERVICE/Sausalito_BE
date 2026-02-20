@@ -26,6 +26,12 @@ class AuthSignupAPITestCase(TestCase):
                 "postal_code": "04524",
                 "road_address": "서울특별시 중구 세종대로 110",
                 "detail_address": "101호",
+                "terms_agree": True,
+                "privacy_collect_agree": True,
+                "age_over_14_agree": True,
+                "health_functional_food_notice_agree": True,
+                "sms_marketing_agree": True,
+                "email_marketing_agree": False,
             },
             format="json",
         )
@@ -39,6 +45,14 @@ class AuthSignupAPITestCase(TestCase):
         self.assertTrue(user.check_password("newpass1234!"))
         self.assertEqual(user.name, "신규회원")
         self.assertEqual(user.phone, "01011112222")
+        self.assertIsNotNone(user.terms_agreed_at)
+        self.assertIsNotNone(user.privacy_collect_agreed_at)
+        self.assertIsNotNone(user.age_over_14_agreed_at)
+        self.assertIsNotNone(user.health_functional_food_notice_agreed_at)
+        self.assertTrue(user.sms_marketing_opt_in)
+        self.assertIsNotNone(user.sms_marketing_opt_in_at)
+        self.assertFalse(user.email_marketing_opt_in)
+        self.assertIsNone(user.email_marketing_opt_in_at)
 
         address = Address.objects.get(user=user, is_default=True)
         self.assertEqual(address.recipient, "신규회원")
@@ -62,6 +76,34 @@ class AuthSignupAPITestCase(TestCase):
                 "postal_code": "12345",
                 "road_address": "서울시 테스트로 1",
                 "detail_address": "",
+                "terms_agree": True,
+                "privacy_collect_agree": True,
+                "age_over_14_agree": True,
+                "health_functional_food_notice_agree": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data.get("success"))
+
+    def test_register_requires_mandatory_consents(self):
+        response = self.client.post(
+            "/api/v1/auth/register",
+            {
+                "email": "consent-user@test.local",
+                "password": "newpass1234!",
+                "password_confirm": "newpass1234!",
+                "name": "동의체크",
+                "phone": "01022223333",
+                "recipient": "동의체크",
+                "recipient_phone": "01022223333",
+                "postal_code": "04524",
+                "road_address": "서울특별시 중구 세종대로 110",
+                "detail_address": "201호",
+                "terms_agree": True,
+                "privacy_collect_agree": True,
+                "age_over_14_agree": False,
+                "health_functional_food_notice_agree": True,
             },
             format="json",
         )

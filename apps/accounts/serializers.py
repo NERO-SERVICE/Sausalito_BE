@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 from rest_framework import serializers
 
 from .admin_security import get_admin_permissions, get_admin_role
@@ -100,6 +101,12 @@ class RegisterSerializer(serializers.Serializer):
     postal_code = serializers.CharField(max_length=10)
     road_address = serializers.CharField(max_length=255)
     detail_address = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    terms_agree = serializers.BooleanField()
+    privacy_collect_agree = serializers.BooleanField()
+    age_over_14_agree = serializers.BooleanField()
+    health_functional_food_notice_agree = serializers.BooleanField()
+    sms_marketing_agree = serializers.BooleanField(required=False, default=False)
+    email_marketing_agree = serializers.BooleanField(required=False, default=False)
 
     def validate_email(self, value):
         email = str(value).strip().lower()
@@ -113,6 +120,16 @@ class RegisterSerializer(serializers.Serializer):
         if password != password_confirm:
             raise serializers.ValidationError({"password_confirm": "비밀번호 확인이 일치하지 않습니다."})
         validate_password(password)
+
+        required_consents = {
+            "terms_agree": "이용약관",
+            "privacy_collect_agree": "개인정보 수집 및 이용",
+            "age_over_14_agree": "만 14세 이상 확인",
+            "health_functional_food_notice_agree": "건강기능식품 구매/섭취 안내",
+        }
+        for field, label in required_consents.items():
+            if not attrs.get(field):
+                raise serializers.ValidationError({field: f"{label} 동의가 필요합니다."})
         return attrs
 
     def create(self, validated_data):
@@ -121,12 +138,27 @@ class RegisterSerializer(serializers.Serializer):
         recipient_phone = data.pop("recipient_phone", "").strip() or data["phone"]
         detail_address = data.pop("detail_address", "").strip()
         password = data.pop("password")
+        terms_agree = bool(data.pop("terms_agree"))
+        privacy_collect_agree = bool(data.pop("privacy_collect_agree"))
+        age_over_14_agree = bool(data.pop("age_over_14_agree"))
+        health_functional_food_notice_agree = bool(data.pop("health_functional_food_notice_agree"))
+        sms_marketing_agree = bool(data.pop("sms_marketing_agree", False))
+        email_marketing_agree = bool(data.pop("email_marketing_agree", False))
+        now = timezone.now()
 
         user = User.objects.create_user(
             email=data["email"],
             password=password,
             name=data["name"],
             phone=data["phone"],
+            terms_agreed_at=now if terms_agree else None,
+            privacy_collect_agreed_at=now if privacy_collect_agree else None,
+            age_over_14_agreed_at=now if age_over_14_agree else None,
+            health_functional_food_notice_agreed_at=now if health_functional_food_notice_agree else None,
+            sms_marketing_opt_in=sms_marketing_agree,
+            sms_marketing_opt_in_at=now if sms_marketing_agree else None,
+            email_marketing_opt_in=email_marketing_agree,
+            email_marketing_opt_in_at=now if email_marketing_agree else None,
         )
         Address.objects.create(
             user=user,
