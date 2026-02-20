@@ -8,6 +8,8 @@ from rest_framework import serializers
 from apps.accounts.models import UserCoupon
 
 from .models import (
+    BrandPageSetting,
+    BrandStorySection,
     HomeBanner,
     Product,
     ProductBadge,
@@ -324,6 +326,36 @@ class HomeBannerSerializer(serializers.ModelSerializer):
         fields = ("id", "subtitle", "title", "description", "cta", "link", "image")
 
     def get_image(self, obj: HomeBanner) -> str:
+        if not has_valid_image_file(obj.image):
+            return ""
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.image.url)
+        return obj.image.url
+
+
+class BrandPageSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BrandPageSetting
+        fields = ("hero_eyebrow", "hero_title", "hero_description")
+
+
+class BrandStorySectionSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BrandStorySection
+        fields = (
+            "id",
+            "eyebrow",
+            "title",
+            "description",
+            "image",
+            "image_alt",
+            "sort_order",
+        )
+
+    def get_image(self, obj: BrandStorySection) -> str:
         if not has_valid_image_file(obj.image):
             return ""
         request = self.context.get("request")

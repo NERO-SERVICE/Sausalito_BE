@@ -1,6 +1,8 @@
 from django.contrib import admin
 
 from .models import (
+    BrandPageSetting,
+    BrandStorySection,
     Category,
     HomeBanner,
     Product,
@@ -60,4 +62,15 @@ class CategoryAdmin(admin.ModelAdmin):
 @admin.register(HomeBanner)
 class HomeBannerAdmin(admin.ModelAdmin):
     list_display = ("id", "title", "sort_order", "is_active")
+    list_editable = ("sort_order", "is_active")
+
+
+@admin.register(BrandPageSetting)
+class BrandPageSettingAdmin(admin.ModelAdmin):
+    list_display = ("id", "hero_eyebrow", "hero_title", "updated_at")
+
+
+@admin.register(BrandStorySection)
+class BrandStorySectionAdmin(admin.ModelAdmin):
+    list_display = ("id", "title", "sort_order", "is_active", "updated_at")
     list_editable = ("sort_order", "is_active")

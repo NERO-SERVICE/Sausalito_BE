@@ -1,6 +1,9 @@
 from django.urls import path
 
 from .admin_views import (
+    AdminBrandPageSettingAPIView,
+    AdminBrandStorySectionDetailAPIView,
+    AdminBrandStorySectionListCreateAPIView,
     AdminHomeBannerDetailAPIView,
     AdminHomeBannerListCreateAPIView,
     AdminProductDetailAPIView,
@@ -73,6 +76,9 @@ urlpatterns = [
     path("admin/reviews/<int:review_id>/visibility", AdminReviewVisibilityAPIView.as_view(), name="admin-review-visibility"),
     path("admin/banners/home/manage", AdminHomeBannerListCreateAPIView.as_view(), name="admin-banner-manage"),
     path("admin/banners/home/manage/<int:banner_id>", AdminHomeBannerDetailAPIView.as_view(), name="admin-banner-detail"),
+    path("admin/brand/page", AdminBrandPageSettingAPIView.as_view(), name="admin-brand-page"),
+    path("admin/brand/sections", AdminBrandStorySectionListCreateAPIView.as_view(), name="admin-brand-sections"),
+    path("admin/brand/sections/<int:section_id>", AdminBrandStorySectionDetailAPIView.as_view(), name="admin-brand-section-detail"),
     path("admin/products/manage/meta", AdminProductMetaAPIView.as_view(), name="admin-product-meta"),
     path("admin/products/manage", AdminProductListCreateAPIView.as_view(), name="admin-product-manage"),
     path("admin/products/manage/<int:product_id>", AdminProductDetailAPIView.as_view(), name="admin-product-detail"),

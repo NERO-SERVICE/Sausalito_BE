@@ -6,8 +6,18 @@ from rest_framework.views import APIView
 
 from apps.common.response import success_response
 
-from .models import HomeBanner, Product
+from .models import (
+    BrandPageSetting,
+    BrandStorySection,
+    DEFAULT_BRAND_HERO_DESCRIPTION,
+    DEFAULT_BRAND_HERO_EYEBROW,
+    DEFAULT_BRAND_HERO_TITLE,
+    HomeBanner,
+    Product,
+)
 from .serializers import (
+    BrandPageSettingSerializer,
+    BrandStorySectionSerializer,
     HomeBannerSerializer,
     ProductDetailMetaSerializer,
     ProductDetailSerializer,
@@ -23,10 +33,57 @@ SORTING_MAP = {
 }
 
 
+def parse_limit(raw_limit: str | None, *, default: int, max_limit: int = 20) -> int:
+    if not raw_limit:
+        return default
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return default
+    if limit <= 0:
+        return default
+    return min(limit, max_limit)
+
+
 class HomeBannerListAPIView(APIView):
     def get(self, request, *args, **kwargs):
         banners = HomeBanner.objects.filter(is_active=True).order_by("sort_order", "id")
+        raw_limit = request.query_params.get("limit")
+        if raw_limit:
+            limit = parse_limit(raw_limit, default=20, max_limit=100)
+            banners = banners[:limit]
         return success_response(HomeBannerSerializer(banners, many=True, context={"request": request}).data)
+
+
+class BrandBannerListAPIView(APIView):
+    def get(self, request, *args, **kwargs):
+        limit = parse_limit(request.query_params.get("limit"), default=2, max_limit=20)
+        banners = (
+            HomeBanner.objects.filter(is_active=True)
+            .exclude(image__isnull=True)
+            .exclude(image="")
+            .order_by("sort_order", "id")[:limit]
+        )
+        return success_response(HomeBannerSerializer(banners, many=True, context={"request": request}).data)
+
+
+class BrandPageAPIView(APIView):
+    def get(self, request, *args, **kwargs):
+        row = BrandPageSetting.objects.order_by("id").first()
+        if not row:
+            row = BrandPageSetting(
+                hero_eyebrow=DEFAULT_BRAND_HERO_EYEBROW,
+                hero_title=DEFAULT_BRAND_HERO_TITLE,
+                hero_description=DEFAULT_BRAND_HERO_DESCRIPTION,
+            )
+
+        sections = BrandStorySection.objects.filter(is_active=True).order_by("sort_order", "id")
+        return success_response(
+            {
+                "hero": BrandPageSettingSerializer(row).data,
+                "sections": BrandStorySectionSerializer(sections, many=True, context={"request": request}).data,
+            }
+        )
 
 
 class ProductListAPIView(ListAPIView):

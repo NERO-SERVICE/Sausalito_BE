@@ -236,6 +236,75 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/admin/brand/page:
+    get:
+      operationId: v1_admin_brand_page_retrieve
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          description: No response body
+    patch:
+      operationId: v1_admin_brand_page_partial_update
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/v1/admin/brand/sections:
+    get:
+      operationId: v1_admin_brand_sections_retrieve
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          description: No response body
+    post:
+      operationId: v1_admin_brand_sections_create
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/v1/admin/brand/sections/{section_id}:
+    patch:
+      operationId: v1_admin_brand_sections_partial_update
+      parameters:
+      - in: path
+        name: section_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      responses:
+        '200':
+          description: No response body
+    delete:
+      operationId: v1_admin_brand_sections_destroy
+      parameters:
+      - in: path
+        name: section_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/admin/coupons:
     get:
       operationId: v1_admin_coupons_retrieve
@@ -654,6 +723,28 @@ paths:
   /api/v1/banners/home:
     get:
       operationId: v1_banners_home_retrieve
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/v1/banners/brand:
+    get:
+      operationId: v1_banners_brand_retrieve
+      tags:
+      - v1
+      security:
+      - jwtAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/v1/brand/page:
+    get:
+      operationId: v1_brand_page_retrieve
       tags:
       - v1
       security:

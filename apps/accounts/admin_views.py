@@ -12,7 +12,15 @@ from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 
-from apps.catalog.models import Category, HomeBanner, Product, ProductBadge, ProductImage
+from apps.catalog.models import (
+    BrandPageSetting,
+    BrandStorySection,
+    Category,
+    HomeBanner,
+    Product,
+    ProductBadge,
+    ProductImage,
+)
 from apps.common.response import error_response, success_response
 from apps.orders.models import Order, ReturnRequest, SettlementRecord
 from apps.reviews.models import Review
@@ -21,6 +29,10 @@ from apps.reviews.serializers import refresh_product_rating
 from .admin_serializers import (
     AdminAuditLogSerializer,
     AdminBannerUpsertSerializer,
+    AdminBrandPageSettingSerializer,
+    AdminBrandPageSettingUpdateSerializer,
+    AdminBrandStorySectionSerializer,
+    AdminBrandStorySectionUpsertSerializer,
     AdminCouponIssueSerializer,
     AdminCouponSerializer,
     AdminHomeBannerSerializer,
@@ -2092,6 +2104,133 @@ class AdminHomeBannerDetailAPIView(APIView):
         row = get_object_or_404(HomeBanner, id=banner_id)
         row.delete()
         return success_response(message="배너가 삭제되었습니다.")
+
+
+class AdminBrandPageSettingAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.BANNER_VIEW},
+        "PATCH": {AdminPermission.BANNER_UPDATE},
+    }
+
+    @staticmethod
+    def _get_setting() -> BrandPageSetting:
+        row = BrandPageSetting.objects.order_by("id").first()
+        if row:
+            return row
+        return BrandPageSetting.objects.create()
+
+    def get(self, request, *args, **kwargs):
+        row = self._get_setting()
+        return success_response(AdminBrandPageSettingSerializer(row).data)
+
+    def patch(self, request, *args, **kwargs):
+        row = self._get_setting()
+        serializer = AdminBrandPageSettingUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        if not payload:
+            return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
+
+        updated_fields: list[str] = []
+        for field in ("hero_eyebrow", "hero_title", "hero_description"):
+            if field in payload:
+                setattr(row, field, payload[field])
+                updated_fields.append(field)
+
+        row.save(update_fields=list(dict.fromkeys(updated_fields + ["updated_at"])))
+        return success_response(AdminBrandPageSettingSerializer(row).data, message="브랜드 페이지 상단 정보가 저장되었습니다.")
+
+
+class AdminBrandStorySectionListCreateAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.BANNER_VIEW},
+        "POST": {AdminPermission.BANNER_UPDATE},
+    }
+
+    def get(self, request, *args, **kwargs):
+        rows = BrandStorySection.objects.all().order_by("sort_order", "id")
+        return success_response(AdminBrandStorySectionSerializer(rows, many=True, context={"request": request}).data)
+
+    def post(self, request, *args, **kwargs):
+        serializer = AdminBrandStorySectionUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        title = (payload.get("title") or "").strip()
+        if not title:
+            return error_response("INVALID_BRAND_SECTION_TITLE", "구획 제목을 입력해주세요.", status_code=status.HTTP_400_BAD_REQUEST)
+
+        row = BrandStorySection(
+            eyebrow=(payload.get("eyebrow") or "").strip(),
+            title=title,
+            description=(payload.get("description") or "").strip(),
+            image_alt=(payload.get("image_alt") or "").strip(),
+            sort_order=int(payload.get("sort_order", 0)),
+            is_active=bool(payload.get("is_active", True)),
+        )
+        image_file = request.FILES.get("image")
+        if image_file:
+            row.image = image_file
+        row.save()
+
+        return success_response(
+            AdminBrandStorySectionSerializer(row, context={"request": request}).data,
+            message="브랜드 구획이 생성되었습니다.",
+            status_code=status.HTTP_201_CREATED,
+        )
+
+
+class AdminBrandStorySectionDetailAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "PATCH": {AdminPermission.BANNER_UPDATE},
+        "DELETE": {AdminPermission.BANNER_UPDATE},
+    }
+
+    def patch(self, request, section_id: int, *args, **kwargs):
+        row = get_object_or_404(BrandStorySection, id=section_id)
+        serializer = AdminBrandStorySectionUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        updated_fields: list[str] = []
+        for field in ("eyebrow", "description", "image_alt", "sort_order", "is_active"):
+            if field in payload:
+                setattr(row, field, payload[field])
+                updated_fields.append(field)
+
+        if "title" in payload:
+            title = (payload.get("title") or "").strip()
+            if not title:
+                return error_response(
+                    "INVALID_BRAND_SECTION_TITLE",
+                    "구획 제목을 입력해주세요.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+            row.title = title
+            updated_fields.append("title")
+
+        image_file = request.FILES.get("image")
+        if image_file:
+            row.image = image_file
+            updated_fields.append("image")
+
+        if not updated_fields:
+            return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
+
+        row.save(update_fields=list(dict.fromkeys(updated_fields + ["updated_at"])))
+        return success_response(
+            AdminBrandStorySectionSerializer(row, context={"request": request}).data,
+            message="브랜드 구획이 저장되었습니다.",
+        )
+
+    def delete(self, request, section_id: int, *args, **kwargs):
+        row = get_object_or_404(BrandStorySection, id=section_id)
+        row.delete()
+        return success_response(message="브랜드 구획이 삭제되었습니다.")
 
 
 class AdminProductMetaAPIView(APIView):

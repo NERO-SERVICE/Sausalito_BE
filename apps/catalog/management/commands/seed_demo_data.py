@@ -15,6 +15,8 @@ from django.db.models import Avg, Count
 from django.utils import timezone
 
 from apps.catalog.models import (
+    BrandPageSetting,
+    BrandStorySection,
     Category,
     HomeBanner,
     Product,
@@ -256,6 +258,33 @@ HOME_BANNERS = [
     },
 ]
 
+BRAND_PAGE_HERO = {
+    "hero_eyebrow": "ABOUT SAUSALITO",
+    "hero_title": "건강한 아침을 설계하는 브랜드",
+    "hero_description": (
+        "소살리토는 매일의 루틴을 더 쉽게, 더 투명하게 만들기 위해 시작되었습니다. "
+        "좋은 성분과 명확한 기준으로 고객의 일상을 오래 함께합니다."
+    ),
+}
+
+BRAND_STORY_SECTIONS = [
+    {
+        "eyebrow": "01 BRAND PHILOSOPHY",
+        "title": "좋은 성분을 쉽게 고르는 기준",
+        "description": "불필요한 성분은 덜고 핵심만 담아 누구나 이해하기 쉬운 선택 기준을 제공합니다.",
+    },
+    {
+        "eyebrow": "02 PRODUCT STANDARD",
+        "title": "원료부터 포장까지 투명한 관리",
+        "description": "원료 수급, 제조 공정, 품질 검증 결과를 고객이 확인할 수 있도록 꾸준히 공개합니다.",
+    },
+    {
+        "eyebrow": "03 DAILY ROUTINE",
+        "title": "바쁜 일상에 맞춘 실천 가능한 루틴",
+        "description": "아침/저녁 루틴에 맞는 조합으로 복잡함을 줄이고 꾸준함을 높이는 제품 경험을 설계합니다.",
+    },
+]
+
 SEED_REVIEWS = [
     {"product_id": 1, "user": "김**", "score": 5, "text": "한 달째 먹고 있는데 오전 집중력이 좋아졌어요.", "date": "2026.02.10", "helpful": 31},
     {"product_id": 2, "user": "이**", "score": 5, "text": "비린맛이 거의 없어서 꾸준히 먹기 편해요.", "date": "2026.02.08", "helpful": 19},
@@ -348,6 +377,8 @@ class Command(BaseCommand):
             ProductImage.objects.all().delete()
             ProductDetailImage.objects.all().delete()
             ProductDetailMeta.objects.all().delete()
+            BrandStorySection.objects.all().delete()
+            BrandPageSetting.objects.all().delete()
             HomeBanner.objects.all().delete()
             Product.objects.all().delete()
             Category.objects.all().delete()
@@ -500,6 +531,27 @@ class Command(BaseCommand):
                 cta_text=banner["cta_text"],
                 link_url=banner["link_url"],
                 image=make_placeholder_file(f"banner_{idx + 1}.png") if with_placeholder_images else None,
+            )
+
+        BrandPageSetting.objects.update_or_create(
+            id=1,
+            defaults={
+                "hero_eyebrow": BRAND_PAGE_HERO["hero_eyebrow"],
+                "hero_title": BRAND_PAGE_HERO["hero_title"],
+                "hero_description": BRAND_PAGE_HERO["hero_description"],
+            },
+        )
+
+        BrandStorySection.objects.all().delete()
+        for idx, section in enumerate(BRAND_STORY_SECTIONS):
+            BrandStorySection.objects.create(
+                eyebrow=section["eyebrow"],
+                title=section["title"],
+                description=section["description"],
+                image_alt=f"브랜드 스토리 이미지 {idx + 1}",
+                sort_order=idx,
+                is_active=True,
+                image=make_placeholder_file(f"brand_story_{idx + 1}.png") if with_placeholder_images else None,
             )
 
         Review.objects.all().delete()

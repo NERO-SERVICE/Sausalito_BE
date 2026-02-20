@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.utils import timezone
 from rest_framework import serializers
 
-from apps.catalog.models import HomeBanner, Product, ProductBadge, ProductImage
+from apps.catalog.models import BrandPageSetting, BrandStorySection, HomeBanner, Product, ProductBadge, ProductImage
 from apps.catalog.serializers import has_valid_image_file as has_valid_catalog_image_file
 from apps.orders.models import Order, ReturnRequest, SettlementRecord
 from apps.payments.models import PaymentTransaction
@@ -439,6 +439,54 @@ class AdminBannerUpsertSerializer(serializers.Serializer):
     description = serializers.CharField(required=False, allow_blank=True)
     cta_text = serializers.CharField(required=False, allow_blank=True)
     link_url = serializers.CharField(required=False, allow_blank=True)
+    sort_order = serializers.IntegerField(required=False, min_value=0)
+    is_active = serializers.BooleanField(required=False)
+
+
+class AdminBrandPageSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BrandPageSetting
+        fields = ("id", "hero_eyebrow", "hero_title", "hero_description", "updated_at")
+
+
+class AdminBrandPageSettingUpdateSerializer(serializers.Serializer):
+    hero_eyebrow = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    hero_title = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    hero_description = serializers.CharField(required=False, allow_blank=True)
+
+
+class AdminBrandStorySectionSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BrandStorySection
+        fields = (
+            "id",
+            "eyebrow",
+            "title",
+            "description",
+            "image_alt",
+            "sort_order",
+            "is_active",
+            "image_url",
+            "created_at",
+            "updated_at",
+        )
+
+    def get_image_url(self, obj: BrandStorySection) -> str:
+        if not has_valid_catalog_image_file(obj.image):
+            return ""
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.image.url)
+        return obj.image.url
+
+
+class AdminBrandStorySectionUpsertSerializer(serializers.Serializer):
+    eyebrow = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    title = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    description = serializers.CharField(required=False, allow_blank=True)
+    image_alt = serializers.CharField(required=False, allow_blank=True, max_length=255)
     sort_order = serializers.IntegerField(required=False, min_value=0)
     is_active = serializers.BooleanField(required=False)
 

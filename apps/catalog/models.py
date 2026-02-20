@@ -9,6 +9,13 @@ from apps.common.file_utils import (
     validate_image_file,
 )
 
+DEFAULT_BRAND_HERO_EYEBROW = "ABOUT SAUSALITO"
+DEFAULT_BRAND_HERO_TITLE = "건강한 아침을 설계하는 브랜드"
+DEFAULT_BRAND_HERO_DESCRIPTION = (
+    "우리는 복잡한 일상을 사는 사람들의 루틴에 가장 간결한 웰니스 해답을 제공합니다. "
+    "매일의 선택이 몸의 컨디션을 바꾼다고 믿습니다."
+)
+
 
 class Category(models.Model):
     name = models.CharField(max_length=100)
@@ -159,3 +166,39 @@ class HomeBanner(models.Model):
 
     class Meta:
         ordering = ["sort_order", "id"]
+
+
+class BrandPageSetting(models.Model):
+    hero_eyebrow = models.CharField(max_length=120, default=DEFAULT_BRAND_HERO_EYEBROW)
+    hero_title = models.CharField(max_length=255, default=DEFAULT_BRAND_HERO_TITLE)
+    hero_description = models.TextField(default=DEFAULT_BRAND_HERO_DESCRIPTION, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        return f"BrandPageSetting#{self.id}"
+
+
+class BrandStorySection(models.Model):
+    eyebrow = models.CharField(max_length=120, blank=True)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    image = models.ImageField(
+        upload_to=banner_image_upload_to,
+        validators=[validate_image_file],
+        null=True,
+        blank=True,
+    )
+    image_alt = models.CharField(max_length=255, blank=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+
+    def __str__(self) -> str:
+        return self.title
