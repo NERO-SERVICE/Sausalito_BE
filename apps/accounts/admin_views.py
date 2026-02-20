@@ -46,6 +46,7 @@ from .admin_serializers import (
     AdminReturnRequestSerializer,
     AdminReturnRequestUpdateSerializer,
     AdminReviewSerializer,
+    AdminReviewManageSerializer,
     AdminReviewVisibilitySerializer,
     AdminSettlementGenerateSerializer,
     AdminSettlementSerializer,
@@ -212,6 +213,15 @@ def _assert_transition(current: str, next_value: str, transition_map: dict[str, 
 
 def _copy_for_audit(instance, fields: tuple[str, ...]) -> dict:
     return {field: getattr(instance, field, None) for field in fields}
+
+
+def _copy_review_manage_audit(review: Review) -> dict:
+    return {
+        "is_best": bool(review.is_best),
+        "admin_reply": review.admin_reply or "",
+        "admin_replied_at": review.admin_replied_at.isoformat() if review.admin_replied_at else None,
+        "admin_replied_by_id": review.admin_replied_by_id,
+    }
 
 
 def _log_pii_view_if_needed(request, *, target_type: str, target_id: str = "", metadata: dict | None = None) -> None:
@@ -1089,7 +1099,7 @@ class AdminReviewListAPIView(APIView):
     required_permissions = {"GET": {AdminPermission.REVIEW_VIEW}}
 
     def get(self, request, *args, **kwargs):
-        queryset = Review.objects.select_related("user", "product").prefetch_related("images")
+        queryset = Review.objects.select_related("user", "product", "admin_replied_by").prefetch_related("images")
 
         status_value = request.query_params.get("status")
         if status_value:
@@ -1098,6 +1108,10 @@ class AdminReviewListAPIView(APIView):
         product_id = request.query_params.get("product_id")
         if product_id and str(product_id).isdigit():
             queryset = queryset.filter(product_id=int(product_id))
+
+        best_only = str(request.query_params.get("best_only", "")).lower()
+        if best_only in {"true", "1", "yes", "y"}:
+            queryset = queryset.filter(is_best=True)
 
         q = request.query_params.get("q", "").strip()
         if q:
@@ -1217,6 +1231,98 @@ class AdminReviewVisibilityAPIView(APIView):
             target_id=str(review.id),
             before=before,
             after={"status": review.status},
+            idempotency_key=idempotency_key,
+        )
+        return response
+
+
+class AdminReviewManageAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"PATCH": {AdminPermission.REVIEW_UPDATE}}
+
+    def patch(self, request, review_id: int, *args, **kwargs):
+        serializer = AdminReviewManageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.reviews.manage.patch",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
+
+        review = get_object_or_404(Review.objects.select_related("admin_replied_by"), id=review_id)
+        before = _copy_review_manage_audit(review)
+        changed_fields: list[str] = []
+
+        if "is_best" in payload:
+            is_best = bool(payload["is_best"])
+            if review.is_best != is_best:
+                review.is_best = is_best
+                changed_fields.append("is_best")
+
+        if payload.get("delete_answer"):
+            if review.admin_reply or review.admin_replied_at or review.admin_replied_by_id:
+                review.admin_reply = ""
+                review.admin_replied_at = None
+                review.admin_replied_by = None
+                changed_fields.extend(["admin_reply", "admin_replied_at", "admin_replied_by"])
+        elif "answer" in payload:
+            answer = str(payload.get("answer") or "").strip()
+            if answer:
+                reply_changed = (
+                    review.admin_reply != answer
+                    or review.admin_replied_by_id != request.user.id
+                    or review.admin_replied_at is None
+                )
+                if reply_changed:
+                    review.admin_reply = answer
+                    review.admin_replied_at = timezone.now()
+                    review.admin_replied_by = request.user
+                    changed_fields.extend(["admin_reply", "admin_replied_at", "admin_replied_by"])
+            else:
+                if review.admin_reply or review.admin_replied_at or review.admin_replied_by_id:
+                    review.admin_reply = ""
+                    review.admin_replied_at = None
+                    review.admin_replied_by = None
+                    changed_fields.extend(["admin_reply", "admin_replied_at", "admin_replied_by"])
+
+        if changed_fields:
+            review.save(update_fields=list(dict.fromkeys([*changed_fields, "updated_at"])))
+
+        response_data = AdminReviewSerializer(review, context={"request": request}).data
+        if not has_full_pii_access(request.user):
+            response_data = apply_masking_to_inquiries(response_data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="Review",
+                target_id=str(review.id),
+                metadata={"endpoint": "admin/reviews/{id}/manage"},
+            )
+
+        response = success_response(response_data, message="리뷰 설정이 저장되었습니다.")
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.reviews.manage.patch",
+            request_hash=request_hash,
+            response=response,
+            target_type="Review",
+            target_id=str(review.id),
+        )
+        log_audit_event(
+            request,
+            action="REVIEW_MANAGED",
+            target_type="Review",
+            target_id=str(review.id),
+            before=before,
+            after=_copy_review_manage_audit(review),
+            metadata={"fields": list(dict.fromkeys(changed_fields))},
             idempotency_key=idempotency_key,
         )
         return response

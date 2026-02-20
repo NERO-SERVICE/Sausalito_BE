@@ -27,6 +27,16 @@ class Review(models.Model):
     title = models.CharField(max_length=255, blank=True)
     content = models.TextField()
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.VISIBLE)
+    is_best = models.BooleanField(default=False)
+    admin_reply = models.TextField(blank=True, default="")
+    admin_replied_at = models.DateTimeField(null=True, blank=True)
+    admin_replied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="review_replies",
+    )
     helpful_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

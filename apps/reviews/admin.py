@@ -10,8 +10,8 @@ class ReviewImageInline(admin.TabularInline):
 
 @admin.register(Review)
 class ReviewAdmin(admin.ModelAdmin):
-    list_display = ("id", "product", "user", "score", "status", "helpful_count", "created_at")
-    list_filter = ("status", "score")
+    list_display = ("id", "product", "user", "score", "status", "is_best", "helpful_count", "created_at")
+    list_filter = ("status", "score", "is_best")
     search_fields = ("product__name", "user__email", "title", "content")
     inlines = [ReviewImageInline]
 

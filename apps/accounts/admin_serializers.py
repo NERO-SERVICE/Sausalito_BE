@@ -329,6 +329,7 @@ class AdminReviewSerializer(serializers.ModelSerializer):
     user_name = serializers.CharField(source="user.name", read_only=True)
     product_name = serializers.CharField(source="product.name", read_only=True)
     images = serializers.SerializerMethodField()
+    admin_replied_by_name = serializers.CharField(source="admin_replied_by.name", default="", read_only=True)
 
     class Meta:
         model = Review
@@ -342,7 +343,11 @@ class AdminReviewSerializer(serializers.ModelSerializer):
             "title",
             "content",
             "status",
+            "is_best",
             "helpful_count",
+            "admin_reply",
+            "admin_replied_at",
+            "admin_replied_by_name",
             "created_at",
             "images",
         )
@@ -363,6 +368,28 @@ class AdminReviewSerializer(serializers.ModelSerializer):
 class AdminReviewVisibilitySerializer(serializers.Serializer):
     visible = serializers.BooleanField()
     idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
+
+
+class AdminReviewManageSerializer(serializers.Serializer):
+    is_best = serializers.BooleanField(required=False)
+    answer = serializers.CharField(required=False, allow_blank=True)
+    delete_answer = serializers.BooleanField(required=False, default=False)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        has_best = "is_best" in attrs
+        has_answer = "answer" in attrs
+        delete_answer = bool(attrs.get("delete_answer", False))
+        if not (has_best or has_answer or delete_answer):
+            raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
+
+        if has_answer:
+            attrs["answer"] = attrs["answer"].strip()
+
+        if delete_answer and has_answer and attrs.get("answer"):
+            raise serializers.ValidationError({"answer": "답변 삭제 시 answer를 함께 보낼 수 없습니다."})
+
+        return attrs
 
 
 class AdminCouponSerializer(serializers.ModelSerializer):

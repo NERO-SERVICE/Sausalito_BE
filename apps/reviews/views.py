@@ -14,7 +14,11 @@ from .serializers import ReviewCreateSerializer, ReviewListSerializer
 
 
 class ReviewListCreateAPIView(ListCreateAPIView):
-    queryset = Review.objects.filter(status=Review.Status.VISIBLE).select_related("user", "product").prefetch_related("images")
+    queryset = (
+        Review.objects.filter(status=Review.Status.VISIBLE)
+        .select_related("user", "product", "admin_replied_by")
+        .prefetch_related("images")
+    )
     parser_classes = (MultiPartParser, FormParser, JSONParser)
 
     def get_serializer_class(self):
@@ -37,6 +41,10 @@ class ReviewListCreateAPIView(ListCreateAPIView):
         has_image = self.request.query_params.get("has_image")
         if has_image == "true":
             queryset = queryset.annotate(image_count=Count("images")).filter(image_count__gt=0)
+
+        best_only = str(self.request.query_params.get("best_only", "")).lower()
+        if best_only in {"true", "1", "yes", "y"}:
+            queryset = queryset.filter(is_best=True)
 
         sort = self.request.query_params.get("sort", "latest")
         if sort == "helpful":

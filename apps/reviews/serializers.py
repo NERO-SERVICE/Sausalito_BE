@@ -40,6 +40,15 @@ class ReviewListSerializer(serializers.ModelSerializer):
     images = ReviewImageSerializer(many=True, read_only=True)
     product_id = serializers.IntegerField(source="product.id", read_only=True)
     helpful = serializers.IntegerField(source="helpful_count", read_only=True)
+    is_best = serializers.BooleanField(read_only=True)
+    isBest = serializers.BooleanField(source="is_best", read_only=True)
+    admin_reply = serializers.CharField(read_only=True)
+    adminReply = serializers.CharField(source="admin_reply", read_only=True)
+    answer = serializers.CharField(source="admin_reply", read_only=True)
+    answered_at = serializers.DateTimeField(source="admin_replied_at", read_only=True)
+    answeredAt = serializers.DateTimeField(source="admin_replied_at", read_only=True)
+    answered_by = serializers.SerializerMethodField()
+    answeredBy = serializers.SerializerMethodField()
 
     # FE 호환 필드
     productId = serializers.IntegerField(source="product.id", read_only=True)
@@ -59,6 +68,15 @@ class ReviewListSerializer(serializers.ModelSerializer):
             "score",
             "title",
             "content",
+            "is_best",
+            "isBest",
+            "admin_reply",
+            "adminReply",
+            "answer",
+            "answered_at",
+            "answeredAt",
+            "answered_by",
+            "answeredBy",
             "text",
             "images",
             "image",
@@ -88,6 +106,14 @@ class ReviewListSerializer(serializers.ModelSerializer):
         if request:
             return request.build_absolute_uri(first.image.url)
         return first.image.url
+
+    def get_answered_by(self, obj: Review) -> str:
+        if not obj.admin_reply:
+            return ""
+        return "관리자"
+
+    def get_answeredBy(self, obj: Review) -> str:
+        return self.get_answered_by(obj)
 
 
 class ReviewCreateSerializer(serializers.Serializer):
