@@ -39,6 +39,7 @@ from .models import (
 )
 from .serializers import (
     DefaultAddressSerializer,
+    DefaultAddressUpdateSerializer,
     DepositTransactionSerializer,
     KakaoAuthorizeUrlSerializer,
     KakaoCallbackSerializer,
@@ -264,6 +265,51 @@ class UserDefaultAddressAPIView(APIView):
             row.save(update_fields=["is_default", "updated_at"])
 
         return success_response(DefaultAddressSerializer(row).data)
+
+    def patch(self, request, *args, **kwargs):
+        serializer = DefaultAddressUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        with transaction.atomic():
+            row = (
+                Address.objects.select_for_update()
+                .filter(user=request.user)
+                .order_by("-is_default", "-updated_at", "-id")
+                .first()
+            )
+            if row:
+                Address.objects.filter(user=request.user, is_default=True).exclude(id=row.id).update(is_default=False)
+                row.recipient = payload["recipient"]
+                row.phone = payload["phone"]
+                row.postal_code = payload["postal_code"]
+                row.road_address = payload["road_address"]
+                row.detail_address = payload.get("detail_address", "")
+                row.is_default = True
+                row.save(
+                    update_fields=[
+                        "recipient",
+                        "phone",
+                        "postal_code",
+                        "road_address",
+                        "detail_address",
+                        "is_default",
+                        "updated_at",
+                    ]
+                )
+            else:
+                Address.objects.filter(user=request.user, is_default=True).update(is_default=False)
+                row = Address.objects.create(
+                    user=request.user,
+                    recipient=payload["recipient"],
+                    phone=payload["phone"],
+                    postal_code=payload["postal_code"],
+                    road_address=payload["road_address"],
+                    detail_address=payload.get("detail_address", ""),
+                    is_default=True,
+                )
+
+        return success_response(DefaultAddressSerializer(row).data, message="기본 배송지가 저장되었습니다.")
 
 
 class UserWithdrawAPIView(APIView):

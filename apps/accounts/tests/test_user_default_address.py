@@ -62,3 +62,55 @@ class UserDefaultAddressAPITestCase(TestCase):
 
         address.refresh_from_db()
         self.assertTrue(address.is_default)
+
+    def test_patch_creates_default_address_when_missing(self):
+        response = self.client.patch(
+            "/api/v1/users/me/default-address",
+            {
+                "recipient": "새 수령인",
+                "phone": "01099998888",
+                "postal_code": "06060",
+                "road_address": "서울특별시 강남구 테헤란로 123",
+                "detail_address": "11층",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.get("success"))
+
+        row = Address.objects.filter(user=self.user, is_default=True).first()
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row.recipient, "새 수령인")
+        self.assertEqual(row.postal_code, "06060")
+
+    def test_patch_updates_existing_default_address(self):
+        row = Address.objects.create(
+            user=self.user,
+            recipient="기존 기본주소",
+            phone="01012345678",
+            postal_code="04524",
+            road_address="서울특별시 중구 세종대로 110",
+            detail_address="101호",
+            is_default=True,
+        )
+
+        response = self.client.patch(
+            "/api/v1/users/me/default-address",
+            {
+                "recipient": "수정 수령인",
+                "phone": "01000001111",
+                "postal_code": "03000",
+                "road_address": "서울특별시 종로구 청와대로 1",
+                "detail_address": "2층",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.get("success"))
+
+        row.refresh_from_db()
+        self.assertEqual(row.recipient, "수정 수령인")
+        self.assertEqual(row.phone, "01000001111")
+        self.assertEqual(row.postal_code, "03000")
+        self.assertEqual(row.road_address, "서울특별시 종로구 청와대로 1")

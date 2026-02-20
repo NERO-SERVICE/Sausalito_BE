@@ -31,6 +31,8 @@ class UserMeSerializer(serializers.ModelSerializer):
             "username",
             "name",
             "phone",
+            "sms_marketing_opt_in",
+            "email_marketing_opt_in",
             "is_staff",
             "isStaff",
             "admin_role",
@@ -40,7 +42,6 @@ class UserMeSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
-            "email",
             "username",
             "is_staff",
             "isStaff",
@@ -49,6 +50,15 @@ class UserMeSerializer(serializers.ModelSerializer):
             "permissions",
             "created_at",
         )
+
+    def validate_email(self, value):
+        email = str(value).strip().lower()
+        qs = User.objects.filter(email__iexact=email)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("이미 사용 중인 이메일입니다.")
+        return email
 
     def get_adminRole(self, obj: User) -> str:
         return get_admin_role(obj)
@@ -72,6 +82,14 @@ class DefaultAddressSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = fields
+
+
+class DefaultAddressUpdateSerializer(serializers.Serializer):
+    recipient = serializers.CharField(max_length=100)
+    phone = serializers.CharField(max_length=20)
+    postal_code = serializers.CharField(max_length=10)
+    road_address = serializers.CharField(max_length=255)
+    detail_address = serializers.CharField(required=False, allow_blank=True, max_length=255)
 
 
 class LoginSerializer(serializers.Serializer):
