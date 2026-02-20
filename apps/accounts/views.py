@@ -29,6 +29,7 @@ from apps.reviews.serializers import ReviewListSerializer
 
 from .admin_security import get_admin_role, log_audit_event
 from .models import (
+    Address,
     DepositTransaction,
     OneToOneInquiry,
     PointTransaction,
@@ -37,6 +38,7 @@ from .models import (
     WishlistItem,
 )
 from .serializers import (
+    DefaultAddressSerializer,
     DepositTransactionSerializer,
     KakaoAuthorizeUrlSerializer,
     KakaoCallbackSerializer,
@@ -241,6 +243,27 @@ class MeAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return success_response(serializer.data, message="회원 정보가 업데이트되었습니다.")
+
+
+class UserDefaultAddressAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        row = (
+            Address.objects.filter(user=request.user)
+            .order_by("-is_default", "-updated_at", "-id")
+            .first()
+        )
+        if not row:
+            return success_response({})
+
+        # Normalize a single default address when legacy data exists.
+        if not row.is_default:
+            Address.objects.filter(user=request.user, is_default=True).update(is_default=False)
+            row.is_default = True
+            row.save(update_fields=["is_default", "updated_at"])
+
+        return success_response(DefaultAddressSerializer(row).data)
 
 
 class UserWithdrawAPIView(APIView):

@@ -57,6 +57,23 @@ class UserMeSerializer(serializers.ModelSerializer):
         return sorted(get_admin_permissions(obj))
 
 
+class DefaultAddressSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Address
+        fields = (
+            "id",
+            "recipient",
+            "phone",
+            "postal_code",
+            "road_address",
+            "detail_address",
+            "is_default",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)

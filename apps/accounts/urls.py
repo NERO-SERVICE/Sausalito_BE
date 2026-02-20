@@ -42,6 +42,7 @@ from .views import (
     RegisterAPIView,
     RefreshAPIView,
     UserWithdrawAPIView,
+    UserDefaultAddressAPIView,
     WishlistAPIView,
     WishlistDetailAPIView,
 )
@@ -55,6 +56,7 @@ urlpatterns = [
     path("auth/refresh", RefreshAPIView.as_view(), name="auth-refresh"),
     path("auth/logout", LogoutAPIView.as_view(), name="auth-logout"),
     path("users/me", MeAPIView.as_view(), name="users-me"),
+    path("users/me/default-address", UserDefaultAddressAPIView.as_view(), name="users-default-address"),
     path("users/me/password", PasswordChangeAPIView.as_view(), name="users-password"),
     path("users/me/withdraw", UserWithdrawAPIView.as_view(), name="users-withdraw"),
     path("users/me/dashboard", MyPageDashboardAPIView.as_view(), name="users-dashboard"),

@@ -4,7 +4,7 @@ from django.conf import settings
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from apps.accounts.models import User
+from apps.accounts.models import Address, User
 from apps.cart.models import Cart, CartItem
 from apps.catalog.models import Product
 from apps.orders.models import Order
@@ -105,3 +105,69 @@ class OrderCreateBuyNowFlowTestCase(TestCase):
         self.assertEqual(item.quantity, 2)
 
         self.assertFalse(CartItem.objects.filter(cart__user=self.user).exists())
+
+    def test_create_order_updates_default_address_when_requested(self):
+        old_default = Address.objects.create(
+            user=self.user,
+            recipient="기존배송지",
+            phone="01099998888",
+            postal_code="99999",
+            road_address="서울특별시 중구 옛주소 1",
+            detail_address="1층",
+            is_default=True,
+        )
+
+        response = self.client.post(
+            "/api/v1/orders",
+            {
+                "recipient": "신규배송지",
+                "phone": "01011112222",
+                "postal_code": "04524",
+                "road_address": "서울특별시 중구 세종대로 110",
+                "detail_address": "10층",
+                "buy_now_product_id": self.product_buy_now.id,
+                "buy_now_quantity": 1,
+                "save_as_default_address": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+
+        old_default.refresh_from_db()
+        self.assertFalse(old_default.is_default)
+
+        new_default = Address.objects.filter(user=self.user, is_default=True).order_by("-updated_at").first()
+        assert new_default is not None
+        self.assertEqual(new_default.recipient, "신규배송지")
+        self.assertEqual(new_default.road_address, "서울특별시 중구 세종대로 110")
+
+    def test_create_order_keeps_existing_default_when_not_requested(self):
+        old_default = Address.objects.create(
+            user=self.user,
+            recipient="기존배송지",
+            phone="01099998888",
+            postal_code="99999",
+            road_address="서울특별시 중구 옛주소 1",
+            detail_address="1층",
+            is_default=True,
+        )
+
+        response = self.client.post(
+            "/api/v1/orders",
+            {
+                "recipient": "주문용배송지",
+                "phone": "01011112222",
+                "postal_code": "04524",
+                "road_address": "서울특별시 중구 세종대로 110",
+                "detail_address": "10층",
+                "buy_now_product_id": self.product_buy_now.id,
+                "buy_now_quantity": 1,
+                "save_as_default_address": False,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+
+        old_default.refresh_from_db()
+        self.assertTrue(old_default.is_default)
+        self.assertEqual(Address.objects.filter(user=self.user, is_default=True).count(), 1)
