@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from django.db.models import Count
+from django.db.models import Count, Prefetch
+from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.generics import ListCreateAPIView
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 
 from apps.common.response import success_response
 
-from .models import Review
-from .serializers import ReviewCreateSerializer, ReviewListSerializer
+from .models import Review, ReviewReport
+from .serializers import ReviewCreateSerializer, ReviewListSerializer, ReviewReportCreateSerializer
 
 
 class ReviewListCreateAPIView(ListCreateAPIView):
@@ -33,6 +35,15 @@ class ReviewListCreateAPIView(ListCreateAPIView):
 
     def get_queryset(self):
         queryset = self.queryset
+        request_user = getattr(self.request, "user", None)
+        if request_user and request_user.is_authenticated:
+            queryset = queryset.prefetch_related(
+                Prefetch(
+                    "reports",
+                    queryset=ReviewReport.objects.filter(reporter_id=request_user.id).only("id", "review_id"),
+                    to_attr="reported_by_current_user",
+                )
+            )
 
         product_id = self.request.query_params.get("product_id")
         if product_id and str(product_id).isdigit():
@@ -95,3 +106,50 @@ class ProductReviewSummaryAPIView(APIView):
             "distribution": distribution,
         }
         return success_response(data)
+
+
+class ReviewReportCreateAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, review_id: int, *args, **kwargs):
+        review = get_object_or_404(Review.objects.select_related("user"), id=review_id)
+        if review.status != Review.Status.VISIBLE:
+            raise ValidationError("신고 가능한 리뷰가 아닙니다.")
+        if review.user_id == request.user.id:
+            raise ValidationError("본인이 작성한 리뷰는 신고할 수 없습니다.")
+
+        serializer = ReviewReportCreateSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        reason = payload.get("reason", ReviewReport.Reason.ETC)
+        detail = (payload.get("detail") or "").strip()
+
+        report, created = ReviewReport.objects.get_or_create(
+            review=review,
+            reporter=request.user,
+            defaults={
+                "reason": reason,
+                "detail": detail,
+                "status": ReviewReport.Status.PENDING,
+            },
+        )
+
+        if not created:
+            report.reason = reason
+            report.detail = detail
+            report.status = ReviewReport.Status.PENDING
+            report.handled_at = None
+            report.handled_by = None
+            report.save(update_fields=["reason", "detail", "status", "handled_at", "handled_by", "updated_at"])
+
+        return success_response(
+            {
+                "review_id": review.id,
+                "status": report.status,
+                "reason": report.reason,
+                "detail": report.detail,
+                "created_at": report.created_at,
+            },
+            message="리뷰 신고가 접수되었습니다." if created else "리뷰 신고 내용이 업데이트되었습니다.",
+            status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )

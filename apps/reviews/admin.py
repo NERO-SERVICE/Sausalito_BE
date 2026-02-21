@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Review, ReviewHelpful, ReviewImage
+from .models import Review, ReviewHelpful, ReviewImage, ReviewReport
 
 
 class ReviewImageInline(admin.TabularInline):
@@ -19,3 +19,10 @@ class ReviewAdmin(admin.ModelAdmin):
 @admin.register(ReviewHelpful)
 class ReviewHelpfulAdmin(admin.ModelAdmin):
     list_display = ("id", "review", "user")
+
+
+@admin.register(ReviewReport)
+class ReviewReportAdmin(admin.ModelAdmin):
+    list_display = ("id", "review", "reporter", "reason", "status", "created_at", "handled_at")
+    list_filter = ("status", "reason")
+    search_fields = ("review__id", "reporter__email", "detail")

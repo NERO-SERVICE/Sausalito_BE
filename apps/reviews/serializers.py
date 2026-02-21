@@ -7,7 +7,7 @@ from rest_framework import serializers
 
 from apps.catalog.models import Product
 
-from .models import Review, ReviewImage
+from .models import Review, ReviewImage, ReviewReport
 
 
 def has_valid_image_file(field_file) -> bool:
@@ -49,6 +49,8 @@ class ReviewListSerializer(serializers.ModelSerializer):
     answeredAt = serializers.DateTimeField(source="admin_replied_at", read_only=True)
     answered_by = serializers.SerializerMethodField()
     answeredBy = serializers.SerializerMethodField()
+    is_reported_by_me = serializers.SerializerMethodField()
+    isReportedByMe = serializers.SerializerMethodField()
 
     # FE 호환 필드
     productId = serializers.IntegerField(source="product.id", read_only=True)
@@ -77,6 +79,8 @@ class ReviewListSerializer(serializers.ModelSerializer):
             "answeredAt",
             "answered_by",
             "answeredBy",
+            "is_reported_by_me",
+            "isReportedByMe",
             "text",
             "images",
             "image",
@@ -114,6 +118,20 @@ class ReviewListSerializer(serializers.ModelSerializer):
 
     def get_answeredBy(self, obj: Review) -> str:
         return self.get_answered_by(obj)
+
+    def get_is_reported_by_me(self, obj: Review) -> bool:
+        prefetched = getattr(obj, "reported_by_current_user", None)
+        if prefetched is not None:
+            return bool(prefetched)
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        return ReviewReport.objects.filter(review_id=obj.id, reporter_id=user.id).exists()
+
+    def get_isReportedByMe(self, obj: Review) -> bool:
+        return self.get_is_reported_by_me(obj)
 
 
 class ReviewCreateSerializer(serializers.Serializer):
@@ -161,6 +179,11 @@ class ReviewCreateSerializer(serializers.Serializer):
 
         refresh_product_rating(product)
         return review
+
+
+class ReviewReportCreateSerializer(serializers.Serializer):
+    reason = serializers.ChoiceField(choices=ReviewReport.Reason.choices, required=False, default=ReviewReport.Reason.ETC)
+    detail = serializers.CharField(required=False, allow_blank=True, max_length=500)
 
 
 def refresh_product_rating(product: Product) -> None:

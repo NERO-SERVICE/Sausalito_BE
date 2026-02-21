@@ -77,3 +77,37 @@ class ReviewHelpful(models.Model):
 
     class Meta:
         unique_together = ("review", "user")
+
+
+class ReviewReport(models.Model):
+    class Reason(models.TextChoices):
+        ABUSE = "ABUSE", "ABUSE"
+        ADVERTISEMENT = "ADVERTISEMENT", "ADVERTISEMENT"
+        PERSONAL_INFO = "PERSONAL_INFO", "PERSONAL_INFO"
+        IRRELEVANT = "IRRELEVANT", "IRRELEVANT"
+        ETC = "ETC", "ETC"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "PENDING"
+        RESOLVED = "RESOLVED", "RESOLVED"
+        REJECTED = "REJECTED", "REJECTED"
+
+    review = models.ForeignKey(Review, on_delete=models.CASCADE, related_name="reports")
+    reporter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="review_reports")
+    reason = models.CharField(max_length=32, choices=Reason.choices, default=Reason.ETC)
+    detail = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    handled_at = models.DateTimeField(null=True, blank=True)
+    handled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="handled_review_reports",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        unique_together = ("review", "reporter")

@@ -23,7 +23,7 @@ from apps.catalog.models import (
 )
 from apps.common.response import error_response, success_response
 from apps.orders.models import Order, ReturnRequest, SettlementRecord
-from apps.reviews.models import Review
+from apps.reviews.models import Review, ReviewReport
 from apps.reviews.serializers import refresh_product_rating
 
 from .admin_serializers import (
@@ -47,6 +47,7 @@ from .admin_serializers import (
     AdminReturnRequestUpdateSerializer,
     AdminReviewSerializer,
     AdminReviewManageSerializer,
+    AdminReviewReportManageSerializer,
     AdminReviewVisibilitySerializer,
     AdminSettlementGenerateSerializer,
     AdminSettlementSerializer,
@@ -1099,7 +1100,19 @@ class AdminReviewListAPIView(APIView):
     required_permissions = {"GET": {AdminPermission.REVIEW_VIEW}}
 
     def get(self, request, *args, **kwargs):
-        queryset = Review.objects.select_related("user", "product", "admin_replied_by").prefetch_related("images")
+        queryset = (
+            Review.objects.select_related("user", "product", "admin_replied_by")
+            .prefetch_related("images")
+            .annotate(
+                report_total_count=Count("reports", distinct=True),
+                report_pending_count=Count(
+                    "reports",
+                    filter=Q(reports__status=ReviewReport.Status.PENDING),
+                    distinct=True,
+                ),
+                last_reported_at=Max("reports__created_at"),
+            )
+        )
 
         status_value = request.query_params.get("status")
         if status_value:
@@ -1323,6 +1336,90 @@ class AdminReviewManageAPIView(APIView):
             before=before,
             after=_copy_review_manage_audit(review),
             metadata={"fields": list(dict.fromkeys(changed_fields))},
+            idempotency_key=idempotency_key,
+        )
+        return response
+
+
+class AdminReviewReportManageAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {"PATCH": {AdminPermission.REVIEW_UPDATE}}
+
+    def patch(self, request, review_id: int, *args, **kwargs):
+        serializer = AdminReviewReportManageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        action = payload["action"]
+        next_status = ReviewReport.Status.RESOLVED if action == "RESOLVE" else ReviewReport.Status.REJECTED
+
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({"action": action})
+        replay_response = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.reviews.reports.patch",
+            request_hash=request_hash,
+        )
+        if replay_response is not None:
+            return replay_response
+
+        review = get_object_or_404(Review, id=review_id)
+        pending_queryset = ReviewReport.objects.filter(review_id=review.id, status=ReviewReport.Status.PENDING)
+        before_pending_count = pending_queryset.count()
+
+        if before_pending_count:
+            now = timezone.now()
+            pending_queryset.update(
+                status=next_status,
+                handled_at=now,
+                handled_by=request.user,
+                updated_at=now,
+            )
+
+        review_row = (
+            Review.objects.select_related("user", "product", "admin_replied_by")
+            .prefetch_related("images")
+            .annotate(
+                report_total_count=Count("reports", distinct=True),
+                report_pending_count=Count(
+                    "reports",
+                    filter=Q(reports__status=ReviewReport.Status.PENDING),
+                    distinct=True,
+                ),
+                last_reported_at=Max("reports__created_at"),
+            )
+            .get(id=review.id)
+        )
+        response_data = AdminReviewSerializer(review_row, context={"request": request}).data
+        if not has_full_pii_access(request.user):
+            response_data = apply_masking_to_inquiries(response_data)
+        else:
+            _log_pii_view_if_needed(
+                request,
+                target_type="Review",
+                target_id=str(review.id),
+                metadata={"endpoint": "admin/reviews/{id}/reports"},
+            )
+
+        response = success_response(response_data, message="리뷰 신고 처리 상태가 저장되었습니다.")
+        save_idempotent_response(
+            request=request,
+            key=idempotency_key,
+            action="admin.reviews.reports.patch",
+            request_hash=request_hash,
+            response=response,
+            target_type="Review",
+            target_id=str(review.id),
+        )
+
+        after_pending_count = ReviewReport.objects.filter(review_id=review.id, status=ReviewReport.Status.PENDING).count()
+        log_audit_event(
+            request,
+            action="REVIEW_REPORTS_HANDLED",
+            target_type="Review",
+            target_id=str(review.id),
+            before={"pending_reports": before_pending_count},
+            after={"pending_reports": after_pending_count, "applied_status": next_status},
+            metadata={"action": action},
             idempotency_key=idempotency_key,
         )
         return response

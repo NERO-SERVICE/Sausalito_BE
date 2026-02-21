@@ -7,7 +7,7 @@ from apps.catalog.models import BrandPageSetting, BrandStorySection, HomeBanner,
 from apps.catalog.serializers import has_valid_image_file as has_valid_catalog_image_file
 from apps.orders.models import Order, ReturnRequest, SettlementRecord
 from apps.payments.models import PaymentTransaction
-from apps.reviews.models import Review
+from apps.reviews.models import Review, ReviewReport
 from apps.reviews.serializers import has_valid_image_file
 
 from .admin_security import get_admin_permissions
@@ -330,6 +330,12 @@ class AdminReviewSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source="product.name", read_only=True)
     images = serializers.SerializerMethodField()
     admin_replied_by_name = serializers.CharField(source="admin_replied_by.name", default="", read_only=True)
+    report_total_count = serializers.SerializerMethodField()
+    report_pending_count = serializers.SerializerMethodField()
+    report_status = serializers.SerializerMethodField()
+    last_reported_at = serializers.SerializerMethodField()
+    latest_report_reason = serializers.SerializerMethodField()
+    latest_report_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = Review
@@ -348,6 +354,12 @@ class AdminReviewSerializer(serializers.ModelSerializer):
             "admin_reply",
             "admin_replied_at",
             "admin_replied_by_name",
+            "report_total_count",
+            "report_pending_count",
+            "report_status",
+            "last_reported_at",
+            "latest_report_reason",
+            "latest_report_detail",
             "created_at",
             "images",
         )
@@ -363,6 +375,63 @@ class AdminReviewSerializer(serializers.ModelSerializer):
             else:
                 rows.append(image.image.url)
         return rows
+
+    def _get_report_total_count(self, obj: Review) -> int:
+        value = getattr(obj, "report_total_count", None)
+        if value is not None:
+            return int(value or 0)
+        return obj.reports.count()
+
+    def _get_report_pending_count(self, obj: Review) -> int:
+        value = getattr(obj, "report_pending_count", None)
+        if value is not None:
+            return int(value or 0)
+        return obj.reports.filter(status=ReviewReport.Status.PENDING).count()
+
+    def _get_last_reported_at(self, obj: Review):
+        value = getattr(obj, "last_reported_at", None)
+        if value is not None:
+            return value
+        latest = obj.reports.order_by("-created_at").values_list("created_at", flat=True).first()
+        return latest
+
+    def _get_latest_report_row(self, obj: Review):
+        prefetched = getattr(obj, "_cached_latest_report", None)
+        if prefetched is not None:
+            return prefetched
+        latest = obj.reports.order_by("-created_at").first()
+        setattr(obj, "_cached_latest_report", latest)
+        return latest
+
+    def get_report_total_count(self, obj: Review) -> int:
+        return self._get_report_total_count(obj)
+
+    def get_report_pending_count(self, obj: Review) -> int:
+        return self._get_report_pending_count(obj)
+
+    def get_report_status(self, obj: Review) -> str:
+        pending_count = self._get_report_pending_count(obj)
+        if pending_count > 0:
+            return ReviewReport.Status.PENDING
+        if self._get_report_total_count(obj) > 0:
+            return "HANDLED"
+        return "NONE"
+
+    def get_last_reported_at(self, obj: Review):
+        value = self._get_last_reported_at(obj)
+        if not value:
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return value
+
+    def get_latest_report_reason(self, obj: Review) -> str:
+        latest = self._get_latest_report_row(obj)
+        return latest.reason if latest else ""
+
+    def get_latest_report_detail(self, obj: Review) -> str:
+        latest = self._get_latest_report_row(obj)
+        return latest.detail if latest else ""
 
 
 class AdminReviewVisibilitySerializer(serializers.Serializer):
@@ -390,6 +459,11 @@ class AdminReviewManageSerializer(serializers.Serializer):
             raise serializers.ValidationError({"answer": "답변 삭제 시 answer를 함께 보낼 수 없습니다."})
 
         return attrs
+
+
+class AdminReviewReportManageSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=(("RESOLVE", "RESOLVE"), ("REJECT", "REJECT")))
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
 
 class AdminCouponSerializer(serializers.ModelSerializer):
