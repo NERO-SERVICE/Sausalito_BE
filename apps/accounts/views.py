@@ -6,10 +6,11 @@ from urllib.parse import urlencode
 from django.conf import settings
 from django.contrib.auth import login as django_login
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from rest_framework.generics import ListAPIView
 from rest_framework import status
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -22,6 +23,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.common.response import error_response, success_response
 from apps.catalog.models import Product
 from apps.catalog.serializers import ProductListSerializer
+from apps.common.pagination import StandardResultsSetPagination
 from apps.orders.models import Order
 from apps.orders.serializers import OrderSerializer
 from apps.reviews.models import Review
@@ -34,6 +36,8 @@ from .models import (
     OneToOneInquiry,
     PointTransaction,
     RecentViewedProduct,
+    SupportFaq,
+    SupportNotice,
     UserCoupon,
     WishlistItem,
 )
@@ -49,8 +53,11 @@ from .serializers import (
     OneToOneInquirySerializer,
     PasswordChangeSerializer,
     PointTransactionSerializer,
+    PublicInquiryListSerializer,
     RecentViewedCreateSerializer,
     RegisterSerializer,
+    SupportFaqSerializer,
+    SupportNoticeSerializer,
     TokenRefreshRequestSerializer,
     UserWithdrawSerializer,
     UserCouponSerializer,
@@ -506,6 +513,57 @@ class RecentViewedProductAPIView(APIView):
             defaults={"viewed_at": timezone.now()},
         )
         return success_response(message="최근 본 상품에 반영되었습니다.", status_code=status.HTTP_201_CREATED)
+
+
+class SupportBoardPagination(StandardResultsSetPagination):
+    page_size = 10
+    max_page_size = 100
+
+
+class SupportNoticeListAPIView(ListAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = SupportNoticeSerializer
+    pagination_class = SupportBoardPagination
+
+    def get_queryset(self):
+        queryset = SupportNotice.objects.filter(is_active=True).order_by("-is_pinned", "-published_at", "-id")
+        q = self.request.query_params.get("q", "").strip()
+        if q:
+            queryset = queryset.filter(Q(title__icontains=q) | Q(content__icontains=q))
+        return queryset
+
+
+class SupportFaqListAPIView(ListAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = SupportFaqSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        queryset = SupportFaq.objects.filter(is_active=True).order_by("category", "sort_order", "id")
+        category = self.request.query_params.get("category", "").strip()
+        if category:
+            queryset = queryset.filter(category=category)
+        q = self.request.query_params.get("q", "").strip()
+        if q:
+            queryset = queryset.filter(Q(question__icontains=q) | Q(answer__icontains=q))
+        return queryset
+
+
+class PublicInquiryListAPIView(ListAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = PublicInquiryListSerializer
+    pagination_class = SupportBoardPagination
+
+    def get_queryset(self):
+        queryset = OneToOneInquiry.objects.select_related("user").order_by("-created_at", "-id")
+        q = self.request.query_params.get("q", "").strip()
+        if q:
+            queryset = queryset.filter(Q(title__icontains=q) | Q(content__icontains=q))
+
+        status = self.request.query_params.get("status", "").strip()
+        if status:
+            queryset = queryset.filter(status=status)
+        return queryset
 
 
 class InquiryListCreateAPIView(APIView):

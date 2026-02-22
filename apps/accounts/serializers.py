@@ -5,13 +5,15 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
 from rest_framework import serializers
 
-from .admin_security import get_admin_permissions, get_admin_role
+from .admin_security import get_admin_permissions, get_admin_role, mask_name
 from .models import (
     Address,
     DepositTransaction,
     OneToOneInquiry,
     PointTransaction,
     RecentViewedProduct,
+    SupportFaq,
+    SupportNotice,
     User,
     UserCoupon,
     WishlistItem,
@@ -294,14 +296,68 @@ class RecentViewedCreateSerializer(serializers.Serializer):
 class OneToOneInquirySerializer(serializers.ModelSerializer):
     class Meta:
         model = OneToOneInquiry
-        fields = ("id", "title", "content", "status", "answer", "answered_at", "created_at", "updated_at")
+        fields = (
+            "id",
+            "title",
+            "content",
+            "category",
+            "status",
+            "answer",
+            "answered_at",
+            "created_at",
+            "updated_at",
+        )
         read_only_fields = ("id", "status", "answer", "answered_at", "created_at", "updated_at")
 
 
 class OneToOneInquiryReadSerializer(serializers.ModelSerializer):
     class Meta:
         model = OneToOneInquiry
-        fields = ("id", "title", "content", "status", "answer", "answered_at", "created_at", "updated_at")
+        fields = (
+            "id",
+            "title",
+            "content",
+            "category",
+            "status",
+            "answer",
+            "answered_at",
+            "created_at",
+            "updated_at",
+        )
+
+
+class SupportNoticeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SupportNotice
+        fields = ("id", "title", "content", "is_pinned", "published_at", "created_at")
+
+
+class SupportFaqSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SupportFaq
+        fields = ("id", "category", "question", "answer", "sort_order")
+
+
+class PublicInquiryListSerializer(serializers.ModelSerializer):
+    user_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OneToOneInquiry
+        fields = (
+            "id",
+            "title",
+            "content",
+            "category",
+            "status",
+            "answer",
+            "answered_at",
+            "created_at",
+            "user_name",
+        )
+
+    def get_user_name(self, obj: OneToOneInquiry) -> str:
+        source = obj.user.name or obj.user.email.split("@")[0] if obj.user.email else "회원"
+        return mask_name(str(source or "회원"))
 
 
 class WishlistItemSerializer(serializers.ModelSerializer):

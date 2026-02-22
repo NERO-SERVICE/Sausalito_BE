@@ -11,7 +11,7 @@ from apps.reviews.models import Review, ReviewReport
 from apps.reviews.serializers import has_valid_image_file
 
 from .admin_security import get_admin_permissions
-from .models import OneToOneInquiry, User, UserCoupon
+from .models import OneToOneInquiry, SupportFaq, SupportNotice, User, UserCoupon
 
 
 class AdminOrderSerializer(serializers.ModelSerializer):
@@ -209,6 +209,36 @@ class AdminInquiryAnswerSerializer(serializers.Serializer):
             raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
 
         return attrs
+
+
+class AdminSupportNoticeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SupportNotice
+        fields = ("id", "title", "content", "is_pinned", "is_active", "published_at", "created_at", "updated_at")
+
+
+class AdminSupportNoticeUpsertSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=200, required=False)
+    content = serializers.CharField(required=False)
+    is_pinned = serializers.BooleanField(required=False)
+    is_active = serializers.BooleanField(required=False)
+    published_at = serializers.DateTimeField(required=False)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
+
+
+class AdminSupportFaqSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SupportFaq
+        fields = ("id", "category", "question", "answer", "sort_order", "is_active", "created_at", "updated_at")
+
+
+class AdminSupportFaqUpsertSerializer(serializers.Serializer):
+    category = serializers.CharField(max_length=60, required=False)
+    question = serializers.CharField(max_length=255, required=False)
+    answer = serializers.CharField(required=False)
+    sort_order = serializers.IntegerField(required=False, min_value=0)
+    is_active = serializers.BooleanField(required=False)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
 
 
 class AdminReturnRequestSerializer(serializers.ModelSerializer):

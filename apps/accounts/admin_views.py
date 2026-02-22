@@ -48,6 +48,10 @@ from .admin_serializers import (
     AdminReviewSerializer,
     AdminReviewManageSerializer,
     AdminReviewReportManageSerializer,
+    AdminSupportFaqSerializer,
+    AdminSupportFaqUpsertSerializer,
+    AdminSupportNoticeSerializer,
+    AdminSupportNoticeUpsertSerializer,
     AdminReviewVisibilitySerializer,
     AdminSettlementGenerateSerializer,
     AdminSettlementSerializer,
@@ -73,7 +77,7 @@ from .admin_security import (
     require_admin_permission,
     save_idempotent_response,
 )
-from .models import AuditLog, OneToOneInquiry, User, UserCoupon
+from .models import AuditLog, OneToOneInquiry, SupportFaq, SupportNotice, User, UserCoupon
 
 
 def _calculate_return_deduction(order: Order) -> int:
@@ -1093,6 +1097,210 @@ class AdminInquiryAnswerAPIView(APIView):
             idempotency_key=idempotency_key,
         )
         return response
+
+
+class AdminSupportNoticeListCreateAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.INQUIRY_VIEW},
+        "POST": {AdminPermission.INQUIRY_UPDATE},
+    }
+
+    def get(self, request, *args, **kwargs):
+        queryset = SupportNotice.objects.all().order_by("-is_pinned", "-published_at", "-id")
+
+        q = request.query_params.get("q", "").strip()
+        if q:
+            queryset = queryset.filter(Q(title__icontains=q) | Q(content__icontains=q))
+
+        is_active = request.query_params.get("is_active")
+        if is_active in {"true", "false"}:
+            queryset = queryset.filter(is_active=(is_active == "true"))
+
+        data = AdminSupportNoticeSerializer(queryset[:300], many=True).data
+        return success_response(data)
+
+    def post(self, request, *args, **kwargs):
+        serializer = AdminSupportNoticeUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        title = str(payload.get("title", "")).strip()
+        content = str(payload.get("content", "")).strip()
+        if not title or not content:
+            raise ValidationError({"detail": "제목과 내용을 모두 입력해주세요."})
+
+        notice = SupportNotice.objects.create(
+            title=title,
+            content=content,
+            is_pinned=bool(payload.get("is_pinned", False)),
+            is_active=bool(payload.get("is_active", True)),
+            published_at=payload.get("published_at") or timezone.now(),
+        )
+
+        data = AdminSupportNoticeSerializer(notice).data
+        log_audit_event(
+            request,
+            action="SUPPORT_NOTICE_CREATED",
+            target_type="SupportNotice",
+            target_id=str(notice.id),
+            after=data,
+        )
+        return success_response(data, message="공지사항이 등록되었습니다.", status_code=status.HTTP_201_CREATED)
+
+
+class AdminSupportNoticeDetailAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "PATCH": {AdminPermission.INQUIRY_UPDATE},
+        "DELETE": {AdminPermission.INQUIRY_UPDATE},
+    }
+
+    def patch(self, request, notice_id: int, *args, **kwargs):
+        notice = get_object_or_404(SupportNotice, id=notice_id)
+        serializer = AdminSupportNoticeUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        before = AdminSupportNoticeSerializer(notice).data
+        updated_fields: list[str] = []
+        for field in ("title", "content", "is_pinned", "is_active", "published_at"):
+            if field in payload:
+                setattr(notice, field, payload[field])
+                updated_fields.append(field)
+
+        if "is_active" in payload and payload["is_active"] and "published_at" not in payload and not notice.published_at:
+            notice.published_at = timezone.now()
+            updated_fields.append("published_at")
+
+        if not updated_fields:
+            raise ValidationError({"detail": "변경할 값을 하나 이상 전달해주세요."})
+
+        notice.save(update_fields=list(dict.fromkeys([*updated_fields, "updated_at"])))
+        data = AdminSupportNoticeSerializer(notice).data
+        log_audit_event(
+            request,
+            action="SUPPORT_NOTICE_UPDATED",
+            target_type="SupportNotice",
+            target_id=str(notice.id),
+            before=before,
+            after=data,
+        )
+        return success_response(data, message="공지사항이 수정되었습니다.")
+
+    def delete(self, request, notice_id: int, *args, **kwargs):
+        notice = get_object_or_404(SupportNotice, id=notice_id)
+        before = AdminSupportNoticeSerializer(notice).data
+        notice.delete()
+        log_audit_event(
+            request,
+            action="SUPPORT_NOTICE_DELETED",
+            target_type="SupportNotice",
+            target_id=str(notice_id),
+            before=before,
+        )
+        return success_response(message="공지사항이 삭제되었습니다.")
+
+
+class AdminSupportFaqListCreateAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.INQUIRY_VIEW},
+        "POST": {AdminPermission.INQUIRY_UPDATE},
+    }
+
+    def get(self, request, *args, **kwargs):
+        queryset = SupportFaq.objects.all().order_by("category", "sort_order", "id")
+
+        q = request.query_params.get("q", "").strip()
+        if q:
+            queryset = queryset.filter(Q(question__icontains=q) | Q(answer__icontains=q))
+
+        category = request.query_params.get("category", "").strip()
+        if category:
+            queryset = queryset.filter(category=category)
+
+        is_active = request.query_params.get("is_active")
+        if is_active in {"true", "false"}:
+            queryset = queryset.filter(is_active=(is_active == "true"))
+
+        data = AdminSupportFaqSerializer(queryset[:500], many=True).data
+        return success_response(data)
+
+    def post(self, request, *args, **kwargs):
+        serializer = AdminSupportFaqUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        question = str(payload.get("question", "")).strip()
+        answer = str(payload.get("answer", "")).strip()
+        if not question or not answer:
+            raise ValidationError({"detail": "질문과 답변을 모두 입력해주세요."})
+
+        faq = SupportFaq.objects.create(
+            category=str(payload.get("category", "일반")).strip() or "일반",
+            question=question,
+            answer=answer,
+            sort_order=int(payload.get("sort_order", 0)),
+            is_active=bool(payload.get("is_active", True)),
+        )
+
+        data = AdminSupportFaqSerializer(faq).data
+        log_audit_event(
+            request,
+            action="SUPPORT_FAQ_CREATED",
+            target_type="SupportFaq",
+            target_id=str(faq.id),
+            after=data,
+        )
+        return success_response(data, message="FAQ가 등록되었습니다.", status_code=status.HTTP_201_CREATED)
+
+
+class AdminSupportFaqDetailAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "PATCH": {AdminPermission.INQUIRY_UPDATE},
+        "DELETE": {AdminPermission.INQUIRY_UPDATE},
+    }
+
+    def patch(self, request, faq_id: int, *args, **kwargs):
+        faq = get_object_or_404(SupportFaq, id=faq_id)
+        serializer = AdminSupportFaqUpsertSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        before = AdminSupportFaqSerializer(faq).data
+        updated_fields: list[str] = []
+        for field in ("category", "question", "answer", "sort_order", "is_active"):
+            if field in payload:
+                setattr(faq, field, payload[field])
+                updated_fields.append(field)
+
+        if not updated_fields:
+            raise ValidationError({"detail": "변경할 값을 하나 이상 전달해주세요."})
+
+        faq.save(update_fields=list(dict.fromkeys([*updated_fields, "updated_at"])))
+        data = AdminSupportFaqSerializer(faq).data
+        log_audit_event(
+            request,
+            action="SUPPORT_FAQ_UPDATED",
+            target_type="SupportFaq",
+            target_id=str(faq.id),
+            before=before,
+            after=data,
+        )
+        return success_response(data, message="FAQ가 수정되었습니다.")
+
+    def delete(self, request, faq_id: int, *args, **kwargs):
+        faq = get_object_or_404(SupportFaq, id=faq_id)
+        before = AdminSupportFaqSerializer(faq).data
+        faq.delete()
+        log_audit_event(
+            request,
+            action="SUPPORT_FAQ_DELETED",
+            target_type="SupportFaq",
+            target_id=str(faq_id),
+            before=before,
+        )
+        return success_response(message="FAQ가 삭제되었습니다.")
 
 
 class AdminReviewListAPIView(APIView):

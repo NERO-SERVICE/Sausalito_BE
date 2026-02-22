@@ -187,6 +187,38 @@ class OneToOneInquiry(models.Model):
         ordering = ["-created_at", "-id"]
 
 
+class SupportNotice(models.Model):
+    title = models.CharField(max_length=200)
+    content = models.TextField()
+    is_pinned = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    published_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_pinned", "-published_at", "-id"]
+
+    def __str__(self) -> str:
+        return self.title
+
+
+class SupportFaq(models.Model):
+    category = models.CharField(max_length=60, default="일반")
+    question = models.CharField(max_length=255)
+    answer = models.TextField()
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["category", "sort_order", "id"]
+
+    def __str__(self) -> str:
+        return self.question
+
+
 class AuditLog(models.Model):
     class Result(models.TextChoices):
         SUCCESS = "SUCCESS", "SUCCESS"

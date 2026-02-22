@@ -9,6 +9,8 @@ from .models import (
     OneToOneInquiry,
     PointTransaction,
     RecentViewedProduct,
+    SupportFaq,
+    SupportNotice,
     User,
     UserCoupon,
     WishlistItem,
@@ -83,6 +85,20 @@ class OneToOneInquiryAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "title", "category", "priority", "status", "assigned_admin", "created_at", "answered_at")
     search_fields = ("user__email", "title", "content")
     list_filter = ("status", "category", "priority")
+
+
+@admin.register(SupportNotice)
+class SupportNoticeAdmin(admin.ModelAdmin):
+    list_display = ("id", "title", "is_pinned", "is_active", "published_at", "updated_at")
+    search_fields = ("title", "content")
+    list_filter = ("is_active", "is_pinned")
+
+
+@admin.register(SupportFaq)
+class SupportFaqAdmin(admin.ModelAdmin):
+    list_display = ("id", "category", "question", "sort_order", "is_active", "updated_at")
+    search_fields = ("category", "question", "answer")
+    list_filter = ("is_active", "category")
 
 
 @admin.register(AuditLog)
