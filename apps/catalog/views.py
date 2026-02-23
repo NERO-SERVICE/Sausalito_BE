@@ -131,7 +131,7 @@ class ProductDetailMetaAPIView(APIView):
         product = (
             Product.objects.filter(pk=pk, is_active=True)
             .select_related("detail_meta")
-            .prefetch_related("detail_meta__images")
+            .prefetch_related("detail_meta__images", "options")
             .first()
         )
         if not product:

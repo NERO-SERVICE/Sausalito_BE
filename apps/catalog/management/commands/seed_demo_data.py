@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import shutil
 import uuid
 from datetime import datetime, timedelta
@@ -309,6 +310,26 @@ BADGE_MAP = {
     "베스트셀러": ProductBadge.BadgeType.BESTSELLER,
     "할인": ProductBadge.BadgeType.DISCOUNT,
 }
+PACKAGE_MONTHS = (1, 2, 3, 6)
+PACKAGE_NAME_MAP = {
+    1: "1개월분",
+    2: "2개월분 (1+1)",
+    3: "3개월분 (2+1)",
+    6: "6개월분 (4+2)",
+}
+PACKAGE_BENEFIT_MAP = {
+    1: "제품 상세선택",
+    2: "1+1",
+    3: "2+1",
+    6: "4+2",
+}
+PACKAGE_DISCOUNT_RATE_MAP = {
+    1: 0,
+    2: 8,
+    3: 14,
+    6: 20,
+}
+PACKAGE_MONTH_PATTERN = re.compile(r"(\d+)\s*개월")
 
 
 def make_placeholder_file(name: str) -> ContentFile:
@@ -318,6 +339,64 @@ def make_placeholder_file(name: str) -> ContentFile:
 def parse_review_datetime(date_text: str) -> datetime:
     dt = datetime.strptime(date_text, "%Y.%m.%d")
     return timezone.make_aware(dt)
+
+
+def extract_package_duration_months(name: str) -> int | None:
+    match = PACKAGE_MONTH_PATTERN.search(str(name or ""))
+    if not match:
+        return None
+    try:
+        duration_months = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return duration_months if duration_months in PACKAGE_MONTHS else None
+
+
+def build_default_package_price(base_price: int, duration_months: int) -> int:
+    safe_base_price = max(int(base_price or 0), 0)
+    discount_rate = int(PACKAGE_DISCOUNT_RATE_MAP.get(duration_months, 0))
+    return int(round((safe_base_price * duration_months) * (100 - discount_rate) / 100))
+
+
+def build_default_package_option(duration_months: int, base_price: int, base_stock: int) -> dict:
+    return {
+        "duration_months": duration_months,
+        "name": PACKAGE_NAME_MAP[duration_months],
+        "benefit_label": PACKAGE_BENEFIT_MAP[duration_months],
+        "price": build_default_package_price(base_price, duration_months),
+        "stock": max(int(base_stock or 0), 0),
+        "is_active": True,
+    }
+
+
+def normalize_seed_product_options(raw_options: list[dict] | None, *, base_price: int, base_stock: int) -> list[dict]:
+    option_map: dict[int, dict] = {}
+    for raw in raw_options or []:
+        duration_months = raw.get("duration_months")
+        if duration_months in {None, ""}:
+            duration_months = extract_package_duration_months(raw.get("name", ""))
+        try:
+            duration_months = int(duration_months)
+        except (TypeError, ValueError):
+            continue
+        if duration_months not in PACKAGE_MONTHS or duration_months in option_map:
+            continue
+
+        default_row = build_default_package_option(duration_months, base_price, base_stock)
+        option_map[duration_months] = {
+            "duration_months": duration_months,
+            "name": str(raw.get("name", "")).strip() or default_row["name"],
+            "benefit_label": str(raw.get("benefit_label", "")).strip() or default_row["benefit_label"],
+            "price": max(int(raw.get("price", default_row["price"]) or 0), 0),
+            "stock": max(int(raw.get("stock", base_stock) or 0), 0),
+            "is_active": bool(raw.get("is_active", True)),
+        }
+
+    for duration_months in PACKAGE_MONTHS:
+        if duration_months not in option_map:
+            option_map[duration_months] = build_default_package_option(duration_months, base_price, base_stock)
+
+    return [option_map[duration_months] for duration_months in PACKAGE_MONTHS]
 
 
 def generate_bulk_reviews() -> list[dict]:
@@ -485,15 +564,21 @@ class Command(BaseCommand):
 
             product.options.all().delete()
             detail_meta_input = PRODUCT_DETAIL_META.get(product.id)
-            if detail_meta_input:
-                for option in detail_meta_input.get("options", []):
-                    ProductOption.objects.create(
-                        product=product,
-                        name=option["name"],
-                        price=option["price"],
-                        stock=option.get("stock", product.stock),
-                        is_active=True,
-                    )
+            normalized_options = normalize_seed_product_options(
+                detail_meta_input.get("options", []) if detail_meta_input else None,
+                base_price=int(product.price or 0),
+                base_stock=int(product.stock or 0),
+            )
+            for option in normalized_options:
+                ProductOption.objects.create(
+                    product=product,
+                    duration_months=option["duration_months"],
+                    benefit_label=option["benefit_label"],
+                    name=option["name"],
+                    price=option["price"],
+                    stock=option.get("stock", product.stock),
+                    is_active=bool(option.get("is_active", True)),
+                )
 
             meta_defaults = {
                 "coupon_text": "신규회원 쿠폰 적용 가능",

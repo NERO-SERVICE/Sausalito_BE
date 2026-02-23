@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 
 from django.core.paginator import EmptyPage, Paginator
@@ -20,6 +21,7 @@ from apps.catalog.models import (
     Product,
     ProductBadge,
     ProductImage,
+    ProductOption,
 )
 from apps.common.response import error_response, success_response
 from apps.orders.models import Order, ReturnRequest, SettlementRecord
@@ -58,6 +60,10 @@ from .admin_serializers import (
     AdminSettlementUpdateSerializer,
     AdminUserManageSerializer,
     AdminUserUpdateSerializer,
+    PRODUCT_PACKAGE_BENEFIT_MAP,
+    PRODUCT_PACKAGE_MONTHS,
+    build_default_package_option,
+    extract_package_duration_months,
 )
 from .admin_security import (
     AdminPermission,
@@ -315,6 +321,63 @@ def _normalize_integer_list(raw_value) -> list[int]:
     return values
 
 
+def _parse_boolean(value, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "on"}
+
+
+def _parse_product_package_options(raw_value) -> list[dict] | None:
+    if raw_value is None or raw_value == "":
+        return None
+
+    parsed = raw_value
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError as exc:
+            raise ValidationError({"package_options_json": "상품구성 옵션 형식이 올바르지 않습니다."}) from exc
+
+    if not isinstance(parsed, list):
+        raise ValidationError({"package_options_json": "상품구성 옵션 형식이 올바르지 않습니다."})
+
+    rows: list[dict] = []
+    for row in parsed:
+        if not isinstance(row, dict):
+            raise ValidationError({"package_options_json": "상품구성 옵션 형식이 올바르지 않습니다."})
+
+        duration_months = row.get("duration_months", row.get("durationMonths"))
+        if duration_months in {None, ""}:
+            raise ValidationError({"package_options_json": "상품구성 기간 정보가 필요합니다."})
+        try:
+            duration_months_number = int(duration_months)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"package_options_json": "상품구성 기간 정보가 올바르지 않습니다."}) from exc
+
+        price = row.get("price", 0)
+        stock = row.get("stock", 0)
+        try:
+            price_number = max(int(price or 0), 0)
+            stock_number = max(int(stock or 0), 0)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"package_options_json": "상품구성 가격/재고 값이 올바르지 않습니다."}) from exc
+
+        rows.append(
+            {
+                "duration_months": duration_months_number,
+                "name": str(row.get("name", "")).strip(),
+                "benefit_label": str(row.get("benefit_label", row.get("benefitLabel", ""))).strip(),
+                "price": price_number,
+                "stock": stock_number,
+                "is_active": _parse_boolean(row.get("is_active", row.get("isActive", True)), default=True),
+            }
+        )
+
+    return rows
+
+
 def _month_start(base_date: date) -> date:
     return base_date.replace(day=1)
 
@@ -385,6 +448,14 @@ def _build_product_payload(data) -> dict:
     if delete_image_ids_raw is not None and (not isinstance(delete_image_ids_raw, list) or delete_image_ids_raw):
         payload["delete_image_ids"] = _normalize_integer_list(delete_image_ids_raw)
 
+    package_options_json = data.get("package_options_json") if hasattr(data, "get") else None
+    package_options_raw = package_options_json
+    if package_options_raw is None or package_options_raw == "":
+        package_options_raw = data.get("package_options") if hasattr(data, "get") else None
+    package_options = _parse_product_package_options(package_options_raw)
+    if package_options is not None:
+        payload["package_options"] = package_options
+
     return payload
 
 
@@ -451,6 +522,112 @@ def _sync_product_images(
             fallback.is_thumbnail = True
             fallback.sort_order = 0
             fallback.save(update_fields=["is_thumbnail", "sort_order"])
+
+
+def _sync_product_package_options(
+    product: Product,
+    *,
+    package_options: list[dict] | None = None,
+) -> None:
+    defaults = [
+        build_default_package_option(
+            duration_months=duration_months,
+            base_price=int(product.price or 0),
+            base_stock=int(product.stock or 0),
+        )
+        for duration_months in PRODUCT_PACKAGE_MONTHS
+    ]
+
+    source_rows = package_options or defaults
+    row_by_month: dict[int, dict] = {}
+    for row in source_rows:
+        try:
+            duration_months = int(row.get("duration_months"))
+        except (TypeError, ValueError):
+            continue
+        if duration_months not in PRODUCT_PACKAGE_MONTHS:
+            continue
+        if duration_months in row_by_month:
+            continue
+        row_by_month[duration_months] = row
+
+    normalized_rows = [row_by_month.get(month) or defaults[idx] for idx, month in enumerate(PRODUCT_PACKAGE_MONTHS)]
+
+    existing_options = list(product.options.all().order_by("id"))
+    existing_by_month: dict[int, ProductOption] = {}
+    extra_options: list[ProductOption] = []
+    for option in existing_options:
+        duration_months = (
+            int(option.duration_months)
+            if option.duration_months in PRODUCT_PACKAGE_MONTHS
+            else extract_package_duration_months(option.name)
+        )
+        if duration_months in PRODUCT_PACKAGE_MONTHS and duration_months not in existing_by_month:
+            existing_by_month[duration_months] = option
+        else:
+            extra_options.append(option)
+
+    for row in normalized_rows:
+        duration_months = int(row["duration_months"])
+        default_name = build_default_package_option(
+            duration_months=duration_months,
+            base_price=int(product.price or 0),
+            base_stock=int(product.stock or 0),
+        )["name"]
+        name = str(row.get("name") or "").strip() or default_name
+        benefit_label = (
+            str(row.get("benefit_label") or "").strip()
+            or PRODUCT_PACKAGE_BENEFIT_MAP.get(duration_months, "")
+        )
+        price = max(int(row.get("price") or 0), 0)
+        stock = max(int(row.get("stock") or 0), 0)
+        is_active = bool(row.get("is_active", True))
+
+        option = existing_by_month.get(duration_months)
+        if option:
+            updated_fields: list[str] = []
+            if option.duration_months != duration_months:
+                option.duration_months = duration_months
+                updated_fields.append("duration_months")
+            if option.name != name:
+                option.name = name
+                updated_fields.append("name")
+            if option.benefit_label != benefit_label:
+                option.benefit_label = benefit_label
+                updated_fields.append("benefit_label")
+            if option.price != price:
+                option.price = price
+                updated_fields.append("price")
+            if option.stock != stock:
+                option.stock = stock
+                updated_fields.append("stock")
+            if option.is_active != is_active:
+                option.is_active = is_active
+                updated_fields.append("is_active")
+            if updated_fields:
+                option.save(update_fields=updated_fields)
+            continue
+
+        ProductOption.objects.create(
+            product=product,
+            duration_months=duration_months,
+            name=name,
+            benefit_label=benefit_label,
+            price=price,
+            stock=stock,
+            is_active=is_active,
+        )
+
+    for option in extra_options:
+        updated_fields: list[str] = []
+        if option.duration_months is not None:
+            option.duration_months = None
+            updated_fields.append("duration_months")
+        if option.is_active:
+            option.is_active = False
+            updated_fields.append("is_active")
+        if updated_fields:
+            option.save(update_fields=updated_fields)
 
 
 class AdminDashboardAPIView(APIView):
@@ -2679,7 +2856,7 @@ class AdminProductListCreateAPIView(APIView):
     }
 
     def get(self, request, *args, **kwargs):
-        queryset = Product.objects.prefetch_related("badges", "images").order_by("-created_at")
+        queryset = Product.objects.prefetch_related("badges", "images", "options").order_by("-created_at")
 
         q = request.query_params.get("q", "").strip()
         if q:
@@ -2773,6 +2950,7 @@ class AdminProductListCreateAPIView(APIView):
         badge_types = payload.get("badge_types", [])
         if badge_types:
             _set_product_badges(product, badge_types)
+        _sync_product_package_options(product, package_options=payload.get("package_options"))
 
         _sync_product_images(
             product,
@@ -2780,7 +2958,7 @@ class AdminProductListCreateAPIView(APIView):
             image_files=request.FILES.getlist("images"),
         )
 
-        refreshed = Product.objects.prefetch_related("badges", "images").get(id=product.id)
+        refreshed = Product.objects.prefetch_related("badges", "images", "options").get(id=product.id)
         return success_response(
             AdminProductManageSerializer(refreshed, context={"request": request}).data,
             message="상품이 생성되었습니다.",
@@ -2866,6 +3044,8 @@ class AdminProductDetailAPIView(APIView):
 
         if "badge_types" in payload:
             _set_product_badges(product, payload.get("badge_types", []))
+        if "package_options" in payload:
+            _sync_product_package_options(product, package_options=payload.get("package_options"))
 
         thumbnail_file = request.FILES.get("thumbnail")
         image_files = request.FILES.getlist("images")
@@ -2883,11 +3063,16 @@ class AdminProductDetailAPIView(APIView):
                 thumbnail_image_id=thumbnail_image_id,
             )
 
-        if len(updated_fields) == 1 and "badge_types" not in payload and not has_image_update:
+        if (
+            len(updated_fields) == 1
+            and "badge_types" not in payload
+            and "package_options" not in payload
+            and not has_image_update
+        ):
             return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
 
         product.save(update_fields=list(dict.fromkeys(updated_fields)))
-        refreshed = Product.objects.prefetch_related("badges", "images").get(id=product.id)
+        refreshed = Product.objects.prefetch_related("badges", "images", "options").get(id=product.id)
         return success_response(
             AdminProductManageSerializer(refreshed, context={"request": request}).data,
             message="상품 정보가 저장되었습니다.",

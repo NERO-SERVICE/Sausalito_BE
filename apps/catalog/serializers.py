@@ -56,7 +56,7 @@ class ProductImageSerializer(serializers.ModelSerializer):
 class ProductOptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductOption
-        fields = ("id", "name", "price", "stock", "is_active")
+        fields = ("id", "duration_months", "benefit_label", "name", "price", "stock", "is_active")
 
 
 class ProductReviewSummarySerializer(serializers.Serializer):
@@ -117,7 +117,7 @@ class ProductListSerializer(serializers.ModelSerializer):
 
 class ProductDetailSerializer(serializers.ModelSerializer):
     images = serializers.SerializerMethodField()
-    options = ProductOptionSerializer(many=True, read_only=True)
+    options = serializers.SerializerMethodField()
     badges = serializers.SerializerMethodField()
     review_summary = serializers.SerializerMethodField()
     coupon_benefit = serializers.SerializerMethodField()
@@ -153,6 +153,10 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     def get_images(self, obj: Product) -> list[dict]:
         valid_images = [image for image in obj.images.all() if has_valid_image_file(image.image)]
         return ProductImageSerializer(valid_images, many=True, context=self.context).data
+
+    def get_options(self, obj: Product) -> list[dict]:
+        queryset = obj.options.filter(is_active=True).order_by("duration_months", "id")
+        return ProductOptionSerializer(queryset, many=True).data
 
     def get_review_summary(self, obj: Product) -> dict:
         return {
@@ -293,6 +297,7 @@ class ProductDetailImageSerializer(serializers.ModelSerializer):
 
 class ProductDetailMetaSerializer(serializers.ModelSerializer):
     detail_images = serializers.SerializerMethodField()
+    options = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductDetailMeta
@@ -304,6 +309,7 @@ class ProductDetailMetaSerializer(serializers.ModelSerializer):
             "purchase_types",
             "subscription_benefit",
             "options_label",
+            "options",
             "add_ons",
             "today_ship_text",
             "inquiry_count",
@@ -314,6 +320,10 @@ class ProductDetailMetaSerializer(serializers.ModelSerializer):
         valid_images = [image for image in obj.images.all() if has_valid_image_file(image.image)]
         serializer = ProductDetailImageSerializer(valid_images, many=True, context=self.context)
         return [row["url"] for row in serializer.data]
+
+    def get_options(self, obj: ProductDetailMeta) -> list[dict]:
+        queryset = obj.product.options.filter(is_active=True).order_by("duration_months", "id")
+        return ProductOptionSerializer(queryset, many=True).data
 
 
 class HomeBannerSerializer(serializers.ModelSerializer):

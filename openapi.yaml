@@ -1478,6 +1478,14 @@ components:
         id:
           type: integer
           readOnly: true
+        duration_months:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 6
+        benefit_label:
+          type: string
+          maxLength: 40
         name:
           type: string
           maxLength: 255
@@ -1495,6 +1503,7 @@ components:
           type: boolean
       required:
       - id
+      - benefit_label
       - name
       - price
     ReviewCreate:

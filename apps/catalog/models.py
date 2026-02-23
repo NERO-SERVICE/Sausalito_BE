@@ -112,6 +112,8 @@ class ProductBadge(models.Model):
 
 class ProductOption(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="options")
+    duration_months = models.PositiveSmallIntegerField(null=True, blank=True)
+    benefit_label = models.CharField(max_length=40, blank=True)
     name = models.CharField(max_length=255)
     price = models.PositiveIntegerField()
     stock = models.PositiveIntegerField(default=0)
@@ -119,6 +121,13 @@ class ProductOption(models.Model):
 
     class Meta:
         ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product", "duration_months"],
+                condition=models.Q(duration_months__isnull=False),
+                name="uniq_product_option_duration_months",
+            )
+        ]
 
 
 class ProductDetailMeta(models.Model):

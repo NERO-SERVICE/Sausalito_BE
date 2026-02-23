@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import re
+
 from django.utils import timezone
 from rest_framework import serializers
 
-from apps.catalog.models import BrandPageSetting, BrandStorySection, HomeBanner, Product, ProductBadge, ProductImage
+from apps.catalog.models import (
+    BrandPageSetting,
+    BrandStorySection,
+    HomeBanner,
+    Product,
+    ProductBadge,
+    ProductImage,
+    ProductOption,
+)
 from apps.catalog.serializers import has_valid_image_file as has_valid_catalog_image_file
 from apps.orders.models import Order, ReturnRequest, SettlementRecord
 from apps.payments.models import PaymentTransaction
@@ -12,6 +22,93 @@ from apps.reviews.serializers import has_valid_image_file
 
 from .admin_security import get_admin_permissions
 from .models import OneToOneInquiry, SupportFaq, SupportNotice, User, UserCoupon
+
+PRODUCT_PACKAGE_MONTHS = (1, 2, 3, 6)
+PRODUCT_PACKAGE_NAME_MAP = {
+    1: "1개월분",
+    2: "2개월분 (1+1)",
+    3: "3개월분 (2+1)",
+    6: "6개월분 (4+2)",
+}
+PRODUCT_PACKAGE_BENEFIT_MAP = {
+    1: "제품 상세선택",
+    2: "1+1",
+    3: "2+1",
+    6: "4+2",
+}
+PRODUCT_PACKAGE_DISCOUNT_RATE_MAP = {
+    1: 0,
+    2: 8,
+    3: 14,
+    6: 20,
+}
+PRODUCT_PACKAGE_MONTH_PATTERN = re.compile(r"(\d+)\s*개월")
+
+
+def extract_package_duration_months(name: str) -> int | None:
+    match = PRODUCT_PACKAGE_MONTH_PATTERN.search(str(name or ""))
+    if not match:
+        return None
+    try:
+        month = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return month if month in PRODUCT_PACKAGE_MONTHS else None
+
+
+def build_default_package_price(base_price: int, duration_months: int) -> int:
+    safe_base_price = max(int(base_price or 0), 0)
+    discount_rate = int(PRODUCT_PACKAGE_DISCOUNT_RATE_MAP.get(duration_months, 0))
+    return int(round((safe_base_price * duration_months) * (100 - discount_rate) / 100))
+
+
+def build_default_package_option(*, duration_months: int, base_price: int, base_stock: int) -> dict:
+    return {
+        "id": None,
+        "duration_months": duration_months,
+        "name": PRODUCT_PACKAGE_NAME_MAP[duration_months],
+        "benefit_label": PRODUCT_PACKAGE_BENEFIT_MAP[duration_months],
+        "price": build_default_package_price(base_price, duration_months),
+        "stock": max(int(base_stock or 0), 0),
+        "is_active": True,
+    }
+
+
+def build_product_package_options(options, *, base_price: int, base_stock: int) -> list[dict]:
+    selected_by_month: dict[int, ProductOption] = {}
+    for option in options:
+        duration_months = (
+            int(option.duration_months)
+            if option.duration_months in PRODUCT_PACKAGE_MONTHS
+            else extract_package_duration_months(option.name)
+        )
+        if duration_months in PRODUCT_PACKAGE_MONTHS and duration_months not in selected_by_month:
+            selected_by_month[duration_months] = option
+
+    rows: list[dict] = []
+    for duration_months in PRODUCT_PACKAGE_MONTHS:
+        option = selected_by_month.get(duration_months)
+        if option:
+            rows.append(
+                {
+                    "id": option.id,
+                    "duration_months": duration_months,
+                    "name": option.name,
+                    "benefit_label": option.benefit_label or PRODUCT_PACKAGE_BENEFIT_MAP[duration_months],
+                    "price": int(option.price or 0),
+                    "stock": int(option.stock or 0),
+                    "is_active": bool(option.is_active),
+                }
+            )
+        else:
+            rows.append(
+                build_default_package_option(
+                    duration_months=duration_months,
+                    base_price=base_price,
+                    base_stock=base_stock,
+                )
+            )
+    return rows
 
 
 class AdminOrderSerializer(serializers.ModelSerializer):
@@ -638,10 +735,21 @@ class AdminProductImageSerializer(serializers.ModelSerializer):
         return obj.image.url
 
 
+class AdminProductPackageOptionSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False, allow_null=True)
+    duration_months = serializers.ChoiceField(choices=PRODUCT_PACKAGE_MONTHS)
+    name = serializers.CharField(max_length=255)
+    benefit_label = serializers.CharField(max_length=40, allow_blank=True, required=False)
+    price = serializers.IntegerField(min_value=0)
+    stock = serializers.IntegerField(min_value=0, required=False, default=0)
+    is_active = serializers.BooleanField(required=False, default=True)
+
+
 class AdminProductManageSerializer(serializers.ModelSerializer):
     thumbnail_url = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
     badge_types = serializers.SerializerMethodField()
+    package_options = serializers.SerializerMethodField()
     category_id = serializers.IntegerField(source="category.id", read_only=True, allow_null=True)
     category_name = serializers.CharField(source="category.name", read_only=True, default="")
 
@@ -671,6 +779,7 @@ class AdminProductManageSerializer(serializers.ModelSerializer):
             "is_active",
             "category_name",
             "badge_types",
+            "package_options",
             "thumbnail_url",
             "images",
             "created_at",
@@ -697,6 +806,13 @@ class AdminProductManageSerializer(serializers.ModelSerializer):
     def get_images(self, obj: Product) -> list[dict]:
         rows = [row for row in obj.images.all() if has_valid_catalog_image_file(row.image)]
         return AdminProductImageSerializer(rows, many=True, context=self.context).data
+
+    def get_package_options(self, obj: Product) -> list[dict]:
+        return build_product_package_options(
+            obj.options.all(),
+            base_price=int(obj.price or 0),
+            base_stock=int(obj.stock or 0),
+        )
 
 
 class AdminProductUpsertSerializer(serializers.Serializer):
@@ -735,6 +851,7 @@ class AdminProductUpsertSerializer(serializers.Serializer):
         allow_empty=True,
     )
     thumbnail_image_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    package_options = AdminProductPackageOptionSerializer(many=True, required=False)
 
     def validate(self, attrs):
         display_start_at = attrs.get("display_start_at")
@@ -743,6 +860,15 @@ class AdminProductUpsertSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"display_end_at": "노출 종료일시는 노출 시작일시보다 빠를 수 없습니다."}
             )
+
+        package_options = attrs.get("package_options")
+        if package_options is not None:
+            duration_months_set = {int(row["duration_months"]) for row in package_options}
+            required_set = set(PRODUCT_PACKAGE_MONTHS)
+            if len(package_options) != len(PRODUCT_PACKAGE_MONTHS) or duration_months_set != required_set:
+                raise serializers.ValidationError(
+                    {"package_options": "상품구성은 1개월분/2개월분/3개월분/6개월분 4개를 모두 입력해야 합니다."}
+                )
         return attrs
 
 
