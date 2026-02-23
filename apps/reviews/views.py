@@ -12,7 +12,13 @@ from rest_framework.views import APIView
 from apps.common.response import success_response
 
 from .models import Review, ReviewReport
-from .serializers import ReviewCreateSerializer, ReviewListSerializer, ReviewReportCreateSerializer
+from .serializers import (
+    EligibleReviewProductSerializer,
+    ReviewCreateSerializer,
+    ReviewListSerializer,
+    ReviewReportCreateSerializer,
+    build_eligible_review_products,
+)
 
 
 class ReviewListCreateAPIView(ListCreateAPIView):
@@ -106,6 +112,15 @@ class ProductReviewSummaryAPIView(APIView):
             "distribution": distribution,
         }
         return success_response(data)
+
+
+class ReviewEligibleProductsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        rows = build_eligible_review_products(user=request.user)
+        serializer = EligibleReviewProductSerializer(rows, many=True)
+        return success_response(serializer.data)
 
 
 class ReviewReportCreateAPIView(APIView):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import BankTransferRequest
+from .models import BankTransferAccountConfig, BankTransferRequest
 
 
 class BankTransferRequestCreateSerializer(serializers.Serializer):
@@ -95,3 +95,49 @@ class AdminBankTransferSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
+
+
+class AdminBankTransferAccountConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BankTransferAccountConfig
+        fields = (
+            "bank_name",
+            "bank_account_no",
+            "account_holder",
+            "guide_message",
+            "verification_notice",
+            "cash_receipt_guide",
+            "business_name",
+            "business_ceo_name",
+            "business_no",
+            "ecommerce_no",
+            "business_address",
+            "support_phone",
+            "support_email",
+            "support_hours",
+            "updated_at",
+        )
+
+
+class AdminBankTransferAccountConfigUpdateSerializer(serializers.Serializer):
+    bank_name = serializers.CharField(max_length=100, required=False)
+    bank_account_no = serializers.CharField(max_length=50, required=False)
+    account_holder = serializers.CharField(max_length=100, required=False)
+    guide_message = serializers.CharField(max_length=255, required=False)
+    verification_notice = serializers.CharField(max_length=255, required=False)
+    cash_receipt_guide = serializers.CharField(max_length=255, required=False)
+    business_name = serializers.CharField(max_length=150, required=False)
+    business_ceo_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    business_no = serializers.CharField(max_length=40, required=False)
+    ecommerce_no = serializers.CharField(max_length=80, required=False)
+    business_address = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    support_phone = serializers.CharField(max_length=60, required=False)
+    support_email = serializers.EmailField(required=False)
+    support_hours = serializers.CharField(max_length=150, required=False)
+    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        effective_attrs = {k: v for k, v in attrs.items() if k != "idempotency_key"}
+        if not effective_attrs:
+            raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
+        return attrs

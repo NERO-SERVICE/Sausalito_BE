@@ -15,7 +15,7 @@ from apps.catalog.models import (
     ProductOption,
 )
 from apps.catalog.serializers import has_valid_image_file as has_valid_catalog_image_file
-from apps.orders.models import Order, ReturnRequest, SettlementRecord
+from apps.orders.models import Order, ReturnRequest
 from apps.payments.models import PaymentTransaction
 from apps.reviews.models import Review, ReviewReport
 from apps.reviews.serializers import has_valid_image_file
@@ -115,9 +115,9 @@ class AdminOrderSerializer(serializers.ModelSerializer):
     user_email = serializers.CharField(source="user.email", default="", read_only=True)
     user_name = serializers.CharField(source="user.name", default="", read_only=True)
     item_count = serializers.SerializerMethodField()
+    items = serializers.SerializerMethodField()
     return_request_count = serializers.SerializerMethodField()
     has_open_return = serializers.SerializerMethodField()
-    settlement_status = serializers.SerializerMethodField()
     latest_payment_provider = serializers.SerializerMethodField()
     payment_method = serializers.SerializerMethodField()
 
@@ -133,6 +133,7 @@ class AdminOrderSerializer(serializers.ModelSerializer):
             "payment_method",
             "latest_payment_provider",
             "shipping_status",
+            "product_order_status",
             "subtotal_amount",
             "shipping_fee",
             "discount_amount",
@@ -150,24 +151,37 @@ class AdminOrderSerializer(serializers.ModelSerializer):
             "delivered_at",
             "created_at",
             "item_count",
+            "items",
             "return_request_count",
             "has_open_return",
-            "settlement_status",
         )
 
     def get_item_count(self, obj: Order) -> int:
         return obj.items.count()
+
+    def get_items(self, obj: Order) -> list[dict]:
+        prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("items")
+        items = prefetched if prefetched is not None else obj.items.all()
+        rows: list[dict] = []
+        for item in items:
+            rows.append(
+                {
+                    "id": int(item.id),
+                    "product_id_snapshot": int(item.product_id_snapshot or 0),
+                    "product_name_snapshot": item.product_name_snapshot or "",
+                    "option_name_snapshot": item.option_name_snapshot or "",
+                    "unit_price": int(item.unit_price or 0),
+                    "quantity": int(item.quantity or 0),
+                    "line_total": int(item.line_total or 0),
+                }
+            )
+        return rows
 
     def get_return_request_count(self, obj: Order) -> int:
         return obj.return_requests.count()
 
     def get_has_open_return(self, obj: Order) -> bool:
         return obj.return_requests.exclude(status__in=[ReturnRequest.Status.CLOSED, ReturnRequest.Status.REJECTED]).exists()
-
-    def get_settlement_status(self, obj: Order) -> str:
-        if not hasattr(obj, "settlement_record") or not obj.settlement_record:
-            return ""
-        return obj.settlement_record.status
 
     def _get_latest_payment_provider(self, obj: Order) -> str:
         transactions = getattr(obj, "_prefetched_objects_cache", {}).get("payment_transactions")
@@ -220,6 +234,7 @@ class AdminOrderUpdateSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=Order.Status.choices, required=False)
     payment_status = serializers.ChoiceField(choices=Order.PaymentStatus.choices, required=False)
     shipping_status = serializers.ChoiceField(choices=Order.ShippingStatus.choices, required=False)
+    product_order_status = serializers.ChoiceField(choices=Order.ProductOrderStatus.choices, required=False)
     courier_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     tracking_no = serializers.CharField(max_length=100, required=False, allow_blank=True)
     issue_invoice = serializers.BooleanField(required=False, default=False)
@@ -388,67 +403,6 @@ class AdminReturnRequestUpdateSerializer(serializers.Serializer):
         if not effective_attrs:
             raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
         return attrs
-
-
-class AdminSettlementSerializer(serializers.ModelSerializer):
-    order_no = serializers.CharField(source="order.order_no", read_only=True)
-    order_created_at = serializers.DateTimeField(source="order.created_at", read_only=True)
-    order_payment_status = serializers.CharField(source="order.payment_status", read_only=True)
-    order_shipping_status = serializers.CharField(source="order.shipping_status", read_only=True)
-    order_subtotal_amount = serializers.IntegerField(source="order.subtotal_amount", read_only=True)
-    order_shipping_fee = serializers.IntegerField(source="order.shipping_fee", read_only=True)
-    order_discount_amount = serializers.IntegerField(source="order.discount_amount", read_only=True)
-    order_total_amount = serializers.IntegerField(source="order.total_amount", read_only=True)
-    user_email = serializers.CharField(source="order.user.email", default="", read_only=True)
-
-    class Meta:
-        model = SettlementRecord
-        fields = (
-            "id",
-            "order_no",
-            "user_email",
-            "status",
-            "gross_amount",
-            "discount_amount",
-            "shipping_fee",
-            "pg_fee",
-            "platform_fee",
-            "return_deduction",
-            "settlement_amount",
-            "expected_payout_date",
-            "paid_at",
-            "memo",
-            "order_created_at",
-            "order_payment_status",
-            "order_shipping_status",
-            "order_subtotal_amount",
-            "order_shipping_fee",
-            "order_discount_amount",
-            "order_total_amount",
-            "created_at",
-            "updated_at",
-        )
-
-
-class AdminSettlementUpdateSerializer(serializers.Serializer):
-    status = serializers.ChoiceField(choices=SettlementRecord.Status.choices, required=False)
-    pg_fee = serializers.IntegerField(required=False)
-    platform_fee = serializers.IntegerField(required=False)
-    return_deduction = serializers.IntegerField(required=False)
-    expected_payout_date = serializers.DateField(required=False, allow_null=True)
-    mark_paid = serializers.BooleanField(required=False, default=False)
-    memo = serializers.CharField(required=False, allow_blank=True)
-    idempotency_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
-
-    def validate(self, attrs):
-        effective_attrs = {k: v for k, v in attrs.items() if k != "idempotency_key"}
-        if not effective_attrs:
-            raise serializers.ValidationError("변경할 필드를 하나 이상 전달해주세요.")
-        return attrs
-
-
-class AdminSettlementGenerateSerializer(serializers.Serializer):
-    only_paid_orders = serializers.BooleanField(required=False, default=True)
 
 
 class AdminReviewSerializer(serializers.ModelSerializer):

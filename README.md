@@ -11,7 +11,7 @@
 - RBAC server enforcement for all admin APIs (`admin_role` + permission matrix)
 - Audit logging (`AuditLog`) for critical security/financial actions
 - Idempotency support (`IdempotencyRecord`) for admin mutation endpoints
-- Order/return/settlement transition validation
+- Order/return/product-order transition validation
 - PII role-based masking + full-view audit tracking
 
 Reference docs:

@@ -35,7 +35,7 @@ from apps.accounts.models import (
     UserCoupon,
     WishlistItem,
 )
-from apps.orders.models import Order, OrderItem, ReturnRequest, SettlementRecord
+from apps.orders.models import Order, OrderItem, ReturnRequest
 from apps.payments.models import PaymentTransaction
 from apps.reviews.models import Review, ReviewImage
 
@@ -440,7 +440,6 @@ class Command(BaseCommand):
         if options["reset"]:
             self.stdout.write("기존 데이터를 정리합니다...")
             PaymentTransaction.objects.all().delete()
-            SettlementRecord.objects.all().delete()
             ReturnRequest.objects.all().delete()
             Order.objects.all().delete()
             OneToOneInquiry.objects.all().delete()
@@ -498,7 +497,7 @@ class Command(BaseCommand):
         role_staff_defaults = [
             ("ops@sausalito.com", "운영관리자", User.AdminRole.OPS),
             ("cs@sausalito.com", "CS관리자", User.AdminRole.CS),
-            ("finance@sausalito.com", "정산관리자", User.AdminRole.FINANCE),
+            ("finance@sausalito.com", "재무관리자", User.AdminRole.FINANCE),
             ("warehouse@sausalito.com", "물류관리자", User.AdminRole.WAREHOUSE),
             ("marketing@sausalito.com", "마케팅관리자", User.AdminRole.MARKETING),
             ("readonly@sausalito.com", "읽기전용관리자", User.AdminRole.READ_ONLY),
@@ -807,24 +806,6 @@ class Command(BaseCommand):
             )
             order_map[order.order_no] = order
 
-        for order in order_map.values():
-            pg_fee = int(round(order.total_amount * 0.033))
-            platform_fee = int(round(order.total_amount * 0.08))
-            SettlementRecord.objects.update_or_create(
-                order=order,
-                defaults={
-                    "status": SettlementRecord.Status.PENDING,
-                    "gross_amount": order.total_amount,
-                    "discount_amount": order.discount_amount,
-                    "shipping_fee": order.shipping_fee,
-                    "pg_fee": pg_fee,
-                    "platform_fee": platform_fee,
-                    "return_deduction": 0,
-                    "settlement_amount": order.total_amount - pg_fee - platform_fee,
-                    "expected_payout_date": timezone.localdate(order.created_at + timedelta(days=3)),
-                },
-            )
-
         order_for_open_return = order_map.get("SAUDEMO20260217002")
         if order_for_open_return:
             ReturnRequest.objects.update_or_create(
@@ -838,7 +819,6 @@ class Command(BaseCommand):
                     "approved_amount": 0,
                 },
             )
-            SettlementRecord.objects.filter(order=order_for_open_return).update(status=SettlementRecord.Status.HOLD)
 
         order_for_refund = order_map.get("SAUDEMO20260217003")
         if order_for_refund:
@@ -858,20 +838,6 @@ class Command(BaseCommand):
                     "admin_note": "고객 동의 하에 부분 환불 완료",
                 },
             )
-            settlement = SettlementRecord.objects.filter(order=order_for_refund).first()
-            if settlement:
-                settlement.return_deduction = refund_amount
-                settlement.settlement_amount = settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - refund_amount
-                settlement.status = SettlementRecord.Status.SCHEDULED
-                settlement.save(update_fields=["return_deduction", "settlement_amount", "status", "updated_at"])
-
-        order_for_paid_settlement = order_map.get("SAUDEMO20260217001")
-        if order_for_paid_settlement:
-            settlement = SettlementRecord.objects.filter(order=order_for_paid_settlement).first()
-            if settlement:
-                settlement.status = SettlementRecord.Status.PAID
-                settlement.paid_at = timezone.now() - timedelta(hours=10)
-                settlement.save(update_fields=["status", "paid_at", "updated_at"])
 
         point_samples = [
             ("EARN", 3000, "신규 가입 적립금"),

@@ -4,7 +4,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.accounts.models import AuditLog, IdempotencyRecord, User
-from apps.orders.models import Order, ReturnRequest, SettlementRecord
+from apps.orders.models import Order, ReturnRequest
 
 
 class AdminSecurityTestCase(TestCase):
@@ -31,7 +31,7 @@ class AdminSecurityTestCase(TestCase):
             password="pass1234",
             is_staff=True,
             admin_role=User.AdminRole.FINANCE,
-            name="정산관리자",
+            name="재무관리자",
         )
         self.customer = User.objects.create_user(
             email="customer@test.local",
@@ -64,29 +64,6 @@ class AdminSecurityTestCase(TestCase):
             requested_amount=5000,
             approved_amount=5000,
         )
-
-        self.settlement = SettlementRecord.objects.create(
-            order=self.order,
-            status=SettlementRecord.Status.PENDING,
-            gross_amount=self.order.total_amount,
-            discount_amount=self.order.discount_amount,
-            shipping_fee=self.order.shipping_fee,
-            pg_fee=400,
-            platform_fee=1000,
-            return_deduction=0,
-            settlement_amount=11600,
-        )
-
-    def test_ops_cannot_update_settlement(self):
-        self.client.force_authenticate(user=self.ops_admin)
-
-        response = self.client.patch(
-            f"/api/v1/admin/settlements/{self.settlement.id}",
-            {"status": SettlementRecord.Status.SCHEDULED},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, 403)
 
     def test_finance_refund_is_idempotent(self):
         self.client.force_authenticate(user=self.finance_admin)

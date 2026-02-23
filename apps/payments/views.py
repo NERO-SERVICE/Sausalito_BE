@@ -25,21 +25,112 @@ from apps.accounts.admin_security import (
 from apps.common.response import error_response, success_response
 from apps.orders.models import Order
 
-from .models import BankTransferRequest, PaymentTransaction
+from .models import BankTransferAccountConfig, BankTransferRequest, PaymentTransaction
 from .services import apply_order_payment_approval
 from .serializers import (
     AdminBankTransferActionSerializer,
+    AdminBankTransferAccountConfigSerializer,
+    AdminBankTransferAccountConfigUpdateSerializer,
     AdminBankTransferSerializer,
     BankTransferRequestCreateSerializer,
     BankTransferRequestSerializer,
 )
 
 
-def get_bank_transfer_account_info() -> dict[str, str]:
+def _default_bank_transfer_account_config_values() -> dict[str, str]:
     return {
         "bank_name": str(getattr(settings, "BANK_TRANSFER_BANK_NAME", "신한은행")),
         "bank_account_no": str(getattr(settings, "BANK_TRANSFER_ACCOUNT_NO", "110-555-012345")),
         "account_holder": str(getattr(settings, "BANK_TRANSFER_ACCOUNT_HOLDER", "소살리토")),
+        "guide_message": str(
+            getattr(
+                settings,
+                "BANK_TRANSFER_GUIDE_MESSAGE",
+                "입금 후 관리자 확인이 완료되면 결제완료 처리됩니다.",
+            )
+        ),
+        "verification_notice": str(
+            getattr(
+                settings,
+                "BANK_TRANSFER_VERIFICATION_NOTICE",
+                "입금자명은 주문자명과 동일하게 입력해 주세요.",
+            )
+        ),
+        "cash_receipt_guide": str(
+            getattr(
+                settings,
+                "BANK_TRANSFER_CASH_RECEIPT_GUIDE",
+                "결제완료 후 마이페이지 또는 고객센터에서 현금영수증 발급을 요청할 수 있습니다.",
+            )
+        ),
+        "business_name": str(getattr(settings, "STORE_BUSINESS_NAME", "주식회사 네로")),
+        "business_ceo_name": str(getattr(settings, "STORE_CEO_NAME", "")),
+        "business_no": str(getattr(settings, "STORE_BUSINESS_NO", "123-45-67890")),
+        "ecommerce_no": str(getattr(settings, "STORE_ECOMMERCE_NO", "2026-서울마포-0001")),
+        "business_address": str(getattr(settings, "STORE_BUSINESS_ADDRESS", "")),
+        "support_phone": str(getattr(settings, "STORE_SUPPORT_PHONE", "1588-1234")),
+        "support_email": str(getattr(settings, "STORE_SUPPORT_EMAIL", "cs@nero.ai.kr")),
+        "support_hours": str(
+            getattr(
+                settings,
+                "STORE_SUPPORT_HOURS",
+                "평일 10:00 - 18:00 / 점심 12:30 - 13:30",
+            )
+        ),
+    }
+
+
+def _get_or_create_bank_transfer_account_config() -> BankTransferAccountConfig:
+    row = BankTransferAccountConfig.objects.filter(singleton_key=1).first()
+    if row:
+        return row
+    return BankTransferAccountConfig.objects.create(singleton_key=1, **_default_bank_transfer_account_config_values())
+
+
+def _build_bank_transfer_account_response(row: BankTransferAccountConfig) -> dict:
+    return {
+        "bank_name": row.bank_name,
+        "bank_account_no": row.bank_account_no,
+        "account_holder": row.account_holder,
+        "guide_message": row.guide_message,
+        "verification_notice": row.verification_notice,
+        "cash_receipt_guide": row.cash_receipt_guide,
+        "business_info": {
+            "name": row.business_name,
+            "ceo_name": row.business_ceo_name,
+            "business_no": row.business_no,
+            "ecommerce_no": row.ecommerce_no,
+            "address": row.business_address,
+        },
+        "support_info": {
+            "phone": row.support_phone,
+            "email": row.support_email,
+            "hours": row.support_hours,
+        },
+        "delivery_refund_policy": {
+            "default_shipping_fee": int(getattr(settings, "DEFAULT_SHIPPING_FEE", 3000)),
+            "free_shipping_threshold": int(getattr(settings, "FREE_SHIPPING_THRESHOLD", 30000)),
+            "return_shipping_fee": int(getattr(settings, "STORE_RETURN_SHIPPING_FEE", 3000)),
+            "exchange_shipping_fee": int(getattr(settings, "STORE_EXCHANGE_SHIPPING_FEE", 6000)),
+            "return_address": str(
+                getattr(settings, "STORE_RETURN_ADDRESS", "서울특별시 중구 퇴계로36길 2 물류센터")
+            ),
+        },
+        "policy_links": {
+            "terms": "/pages/terms.html",
+            "privacy": "/pages/privacy.html",
+            "guide": "/pages/guide.html",
+            "commerce_notice": "/pages/commerce-notice.html",
+        },
+    }
+
+
+def get_bank_transfer_account_info() -> dict[str, str]:
+    row = _get_or_create_bank_transfer_account_config()
+    return {
+        "bank_name": row.bank_name,
+        "bank_account_no": row.bank_account_no,
+        "account_holder": row.account_holder,
     }
 
 
@@ -47,48 +138,94 @@ class BankTransferAccountInfoAPIView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):
-        account = get_bank_transfer_account_info()
-        return success_response(
-            {
-                **account,
-                "guide_message": "입금 후 관리자 확인이 완료되면 결제완료 처리됩니다.",
-                "verification_notice": "입금자명은 주문자명과 동일하게 입력해 주세요.",
-                "cash_receipt_guide": "결제완료 후 마이페이지 또는 고객센터에서 현금영수증 발급을 요청할 수 있습니다.",
-                "business_info": {
-                    "name": str(getattr(settings, "STORE_BUSINESS_NAME", "주식회사 네로")),
-                    "ceo_name": str(getattr(settings, "STORE_CEO_NAME", "한동균, 박호연")),
-                    "business_no": str(getattr(settings, "STORE_BUSINESS_NO", "123-45-67890")),
-                    "ecommerce_no": str(getattr(settings, "STORE_ECOMMERCE_NO", "2026-서울마포-0001")),
-                    "address": str(getattr(settings, "STORE_BUSINESS_ADDRESS", "서울특별시 중구 퇴계로36길 2")),
-                },
-                "support_info": {
-                    "phone": str(getattr(settings, "STORE_SUPPORT_PHONE", "1588-1234")),
-                    "email": str(getattr(settings, "STORE_SUPPORT_EMAIL", "cs@nero.ai.kr")),
-                    "hours": str(
-                        getattr(
-                            settings,
-                            "STORE_SUPPORT_HOURS",
-                            "평일 10:00 - 18:00 / 점심 12:30 - 13:30",
-                        )
-                    ),
-                },
-                "delivery_refund_policy": {
-                    "default_shipping_fee": int(getattr(settings, "DEFAULT_SHIPPING_FEE", 3000)),
-                    "free_shipping_threshold": int(getattr(settings, "FREE_SHIPPING_THRESHOLD", 30000)),
-                    "return_shipping_fee": int(getattr(settings, "STORE_RETURN_SHIPPING_FEE", 3000)),
-                    "exchange_shipping_fee": int(getattr(settings, "STORE_EXCHANGE_SHIPPING_FEE", 6000)),
-                    "return_address": str(
-                        getattr(settings, "STORE_RETURN_ADDRESS", "서울특별시 중구 퇴계로36길 2 물류센터")
-                    ),
-                },
-                "policy_links": {
-                    "terms": "/pages/terms.html",
-                    "privacy": "/pages/privacy.html",
-                    "guide": "/pages/guide.html",
-                    "commerce_notice": "/pages/commerce-notice.html",
-                },
-            }
+        row = _get_or_create_bank_transfer_account_config()
+        return success_response(_build_bank_transfer_account_response(row))
+
+
+class AdminBankTransferAccountConfigAPIView(APIView):
+    permission_classes = [AdminRBACPermission]
+    required_permissions = {
+        "GET": {AdminPermission.ORDER_VIEW},
+        "PATCH": {AdminPermission.ORDER_UPDATE},
+    }
+
+    def get(self, request, *args, **kwargs):
+        row = _get_or_create_bank_transfer_account_config()
+        return success_response(AdminBankTransferAccountConfigSerializer(row).data)
+
+    def patch(self, request, *args, **kwargs):
+        serializer = AdminBankTransferAccountConfigUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        idempotency_key = extract_idempotency_key(request, payload)
+        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
+        replay = get_idempotent_replay_response(
+            key=idempotency_key,
+            action="admin.bank_transfer.account_config.patch",
+            request_hash=request_hash,
         )
+        if replay is not None:
+            return replay
+
+        updatable_fields = (
+            "bank_name",
+            "bank_account_no",
+            "account_holder",
+            "guide_message",
+            "verification_notice",
+            "cash_receipt_guide",
+            "business_name",
+            "business_ceo_name",
+            "business_no",
+            "ecommerce_no",
+            "business_address",
+            "support_phone",
+            "support_email",
+            "support_hours",
+        )
+
+        with transaction.atomic():
+            row = BankTransferAccountConfig.objects.select_for_update().filter(singleton_key=1).first()
+            if not row:
+                row = BankTransferAccountConfig.objects.create(
+                    singleton_key=1,
+                    **_default_bank_transfer_account_config_values(),
+                )
+
+            before = AdminBankTransferAccountConfigSerializer(row).data
+            updated_fields = ["updated_at"]
+            for field in updatable_fields:
+                if field in payload:
+                    setattr(row, field, payload[field])
+                    updated_fields.append(field)
+
+            if len(updated_fields) == 1:
+                return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
+
+            row.save(update_fields=list(dict.fromkeys(updated_fields)))
+            data = AdminBankTransferAccountConfigSerializer(row).data
+            response = success_response(data, message="입금 계좌 정보가 저장되었습니다.")
+
+            save_idempotent_response(
+                request=request,
+                key=idempotency_key,
+                action="admin.bank_transfer.account_config.patch",
+                request_hash=request_hash,
+                response=response,
+                target_type="BankTransferAccountConfig",
+                target_id=str(row.id),
+            )
+            log_audit_event(
+                request,
+                action="BANK_TRANSFER_ACCOUNT_CONFIG_UPDATED",
+                target_type="BankTransferAccountConfig",
+                target_id=str(row.id),
+                before=before,
+                after=data,
+                idempotency_key=idempotency_key,
+            )
+            return response
 
 
 class BankTransferRequestListCreateAPIView(APIView):

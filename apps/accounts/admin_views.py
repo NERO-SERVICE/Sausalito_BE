@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date
 
 from django.core.paginator import EmptyPage, Paginator
 from django.db import transaction
@@ -24,7 +24,7 @@ from apps.catalog.models import (
     ProductOption,
 )
 from apps.common.response import error_response, success_response
-from apps.orders.models import Order, ReturnRequest, SettlementRecord
+from apps.orders.models import Order, ReturnRequest
 from apps.reviews.models import Review, ReviewReport
 from apps.reviews.serializers import refresh_product_rating
 
@@ -55,9 +55,6 @@ from .admin_serializers import (
     AdminSupportNoticeSerializer,
     AdminSupportNoticeUpsertSerializer,
     AdminReviewVisibilitySerializer,
-    AdminSettlementGenerateSerializer,
-    AdminSettlementSerializer,
-    AdminSettlementUpdateSerializer,
     AdminUserManageSerializer,
     AdminUserUpdateSerializer,
     PRODUCT_PACKAGE_BENEFIT_MAP,
@@ -71,7 +68,6 @@ from .admin_security import (
     apply_masking_to_inquiries,
     apply_masking_to_orders,
     apply_masking_to_returns,
-    apply_masking_to_settlements,
     apply_masking_to_users,
     build_request_hash,
     extract_idempotency_key,
@@ -84,76 +80,6 @@ from .admin_security import (
     save_idempotent_response,
 )
 from .models import AuditLog, OneToOneInquiry, SupportFaq, SupportNotice, User, UserCoupon
-
-
-def _calculate_return_deduction(order: Order) -> int:
-    return int(
-        order.return_requests.filter(status__in=[ReturnRequest.Status.REFUNDED, ReturnRequest.Status.CLOSED])
-        .aggregate(total=Coalesce(Sum("approved_amount"), 0))
-        .get("total")
-        or 0
-    )
-
-
-def _calculate_settlement_payload(
-    order: Order,
-    *,
-    pg_fee: int | None = None,
-    platform_fee: int | None = None,
-    return_deduction: int | None = None,
-) -> dict:
-    gross_amount = int(order.total_amount or 0)
-    pg_fee_value = int(pg_fee if pg_fee is not None else round(gross_amount * 0.033))
-    platform_fee_value = int(platform_fee if platform_fee is not None else round(gross_amount * 0.08))
-    return_deduction_value = int(return_deduction if return_deduction is not None else _calculate_return_deduction(order))
-
-    return {
-        "gross_amount": gross_amount,
-        "discount_amount": int(order.discount_amount or 0),
-        "shipping_fee": int(order.shipping_fee or 0),
-        "pg_fee": pg_fee_value,
-        "platform_fee": platform_fee_value,
-        "return_deduction": return_deduction_value,
-        "settlement_amount": gross_amount - pg_fee_value - platform_fee_value - return_deduction_value,
-    }
-
-
-def _ensure_settlement_record(order: Order) -> SettlementRecord:
-    payload = _calculate_settlement_payload(order)
-    defaults = {
-        **payload,
-        "status": SettlementRecord.Status.PENDING,
-        "expected_payout_date": timezone.localdate(order.created_at + timedelta(days=3)) if order.created_at else None,
-    }
-
-    settlement, created = SettlementRecord.objects.get_or_create(order=order, defaults=defaults)
-    if created:
-        return settlement
-
-    settlement.gross_amount = payload["gross_amount"]
-    settlement.discount_amount = payload["discount_amount"]
-    settlement.shipping_fee = payload["shipping_fee"]
-    settlement.return_deduction = payload["return_deduction"]
-    settlement.settlement_amount = (
-        settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - settlement.return_deduction
-    )
-
-    if settlement.expected_payout_date is None and order.created_at:
-        settlement.expected_payout_date = timezone.localdate(order.created_at + timedelta(days=3))
-
-    settlement.save(
-        update_fields=[
-            "gross_amount",
-            "discount_amount",
-            "shipping_fee",
-            "return_deduction",
-            "settlement_amount",
-            "expected_payout_date",
-            "updated_at",
-        ]
-    )
-    return settlement
-
 
 ORDER_STATUS_TRANSITIONS: dict[str, set[str]] = {
     Order.Status.PENDING: {Order.Status.PAID, Order.Status.FAILED, Order.Status.CANCELED},
@@ -198,28 +124,40 @@ RETURN_STATUS_TRANSITIONS: dict[str, set[str]] = {
     ReturnRequest.Status.CLOSED: set(),
 }
 
-SETTLEMENT_STATUS_TRANSITIONS: dict[str, set[str]] = {
-    SettlementRecord.Status.PENDING: {
-        SettlementRecord.Status.HOLD,
-        SettlementRecord.Status.SCHEDULED,
-        SettlementRecord.Status.PAID,
-    },
-    SettlementRecord.Status.HOLD: {
-        SettlementRecord.Status.PENDING,
-        SettlementRecord.Status.SCHEDULED,
-        SettlementRecord.Status.PAID,
-    },
-    SettlementRecord.Status.SCHEDULED: {SettlementRecord.Status.HOLD, SettlementRecord.Status.PAID},
-    SettlementRecord.Status.PAID: set(),
-}
-
-
 def _assert_transition(current: str, next_value: str, transition_map: dict[str, set[str]], field_name: str) -> None:
     if current == next_value:
         return
     allowed = transition_map.get(current, set())
     if next_value not in allowed:
         raise ValidationError({field_name: f"상태 전이가 허용되지 않습니다. ({current} -> {next_value})"})
+
+
+def _derive_product_order_status(order: Order) -> str:
+    if order.status == Order.Status.CANCELED and order.payment_status != Order.PaymentStatus.APPROVED:
+        return Order.ProductOrderStatus.UNPAID_CANCELED
+    if order.status == Order.Status.CANCELED:
+        return Order.ProductOrderStatus.CANCELED
+
+    has_return = order.return_requests.filter(
+        status__in=[
+            ReturnRequest.Status.REQUESTED,
+            ReturnRequest.Status.APPROVED,
+            ReturnRequest.Status.PICKUP_SCHEDULED,
+            ReturnRequest.Status.RECEIVED,
+            ReturnRequest.Status.REFUNDING,
+            ReturnRequest.Status.REFUNDED,
+            ReturnRequest.Status.CLOSED,
+        ]
+    ).exists()
+    if has_return:
+        return Order.ProductOrderStatus.RETURNED
+    if order.shipping_status == Order.ShippingStatus.SHIPPED:
+        return Order.ProductOrderStatus.SHIPPING
+    if order.shipping_status == Order.ShippingStatus.DELIVERED:
+        return Order.ProductOrderStatus.DELIVERED
+    if order.payment_status == Order.PaymentStatus.APPROVED:
+        return Order.ProductOrderStatus.PAYMENT_COMPLETED
+    return Order.ProductOrderStatus.PAYMENT_PENDING
 
 
 def _copy_for_audit(instance, fields: tuple[str, ...]) -> dict:
@@ -643,14 +581,6 @@ class AdminDashboardAPIView(APIView):
             ReturnRequest.Status.RECEIVED,
             ReturnRequest.Status.REFUNDING,
         ]
-
-        settlements = SettlementRecord.objects.all()
-        pending_settlement_amount = (
-            settlements.exclude(status=SettlementRecord.Status.PAID)
-            .aggregate(total=Coalesce(Sum("settlement_amount"), 0))
-            .get("total")
-            or 0
-        )
         now = timezone.now()
 
         current_month = _month_start(timezone.localdate())
@@ -671,8 +601,6 @@ class AdminDashboardAPIView(APIView):
                 "return_request_count": 0,
                 "new_user_count": 0,
                 "inquiry_count": 0,
-                "paid_settlement_count": 0,
-                "paid_settlement_amount": 0,
             }
 
         def assign_monthly(rows, field_mappings: dict[str, str]):
@@ -732,20 +660,6 @@ class AdminDashboardAPIView(APIView):
             {"inquiry_count": "inquiry_count"},
         )
 
-        assign_monthly(
-            SettlementRecord.objects.filter(paid_at__isnull=False)
-            .annotate(month=TruncMonth("paid_at"))
-            .values("month")
-            .annotate(
-                paid_settlement_count=Count("id"),
-                paid_settlement_amount=Coalesce(Sum("settlement_amount"), 0),
-            ),
-            {
-                "paid_settlement_count": "paid_settlement_count",
-                "paid_settlement_amount": "paid_settlement_amount",
-            },
-        )
-
         current_month_key = current_month.strftime("%Y-%m")
         current_month_metrics = month_metrics.get(current_month_key, {})
 
@@ -753,13 +667,6 @@ class AdminDashboardAPIView(APIView):
             payment_status=Order.PaymentStatus.APPROVED,
             shipping_status__in=[Order.ShippingStatus.READY, Order.ShippingStatus.PREPARING],
         ).count()
-
-        paid_settlement_amount = int(
-            settlements.filter(status=SettlementRecord.Status.PAID)
-            .aggregate(total=Coalesce(Sum("settlement_amount"), 0))
-            .get("total")
-            or 0
-        )
 
         data = {
             "summary": {
@@ -771,7 +678,6 @@ class AdminDashboardAPIView(APIView):
                 "this_month_refund_amount": int(current_month_metrics.get("refund_amount", 0)),
                 "this_month_new_user_count": int(current_month_metrics.get("new_user_count", 0)),
                 "this_month_inquiry_count": int(current_month_metrics.get("inquiry_count", 0)),
-                "this_month_paid_settlement_amount": int(current_month_metrics.get("paid_settlement_amount", 0)),
                 "shipping_pending_count": shipping_pending_count,
                 "shipping_shipped_count": orders.filter(shipping_status=Order.ShippingStatus.SHIPPED).count(),
                 "shipping_delivered_count": orders.filter(shipping_status=Order.ShippingStatus.DELIVERED).count(),
@@ -792,8 +698,6 @@ class AdminDashboardAPIView(APIView):
                 "hidden_review_count": Review.objects.filter(status=Review.Status.HIDDEN).count(),
                 "open_return_count": ReturnRequest.objects.filter(status__in=open_return_statuses).count(),
                 "completed_return_count": ReturnRequest.objects.filter(status=ReturnRequest.Status.REFUNDED).count(),
-                "pending_settlement_amount": int(pending_settlement_amount),
-                "paid_settlement_amount": paid_settlement_amount,
             },
             "monthly_metrics": [month_metrics[key] for key in month_keys],
             "status_sectors": {
@@ -815,12 +719,6 @@ class AdminDashboardAPIView(APIView):
                     "answered": OneToOneInquiry.objects.filter(status=OneToOneInquiry.Status.ANSWERED).count(),
                     "closed": OneToOneInquiry.objects.filter(status=OneToOneInquiry.Status.CLOSED).count(),
                 },
-                "settlements": {
-                    "pending": settlements.filter(status=SettlementRecord.Status.PENDING).count(),
-                    "hold": settlements.filter(status=SettlementRecord.Status.HOLD).count(),
-                    "scheduled": settlements.filter(status=SettlementRecord.Status.SCHEDULED).count(),
-                    "paid": settlements.filter(status=SettlementRecord.Status.PAID).count(),
-                },
             },
         }
         return success_response(data)
@@ -832,7 +730,7 @@ class AdminOrderListAPIView(APIView):
 
     def get(self, request, *args, **kwargs):
         queryset = (
-            Order.objects.select_related("user", "settlement_record")
+            Order.objects.select_related("user")
             .prefetch_related("items", "return_requests", "payment_transactions", "bank_transfer_requests")
             .order_by("-created_at")
         )
@@ -919,6 +817,7 @@ class AdminOrderUpdateAPIView(APIView):
                     "status",
                     "payment_status",
                     "shipping_status",
+                    "product_order_status",
                     "courier_name",
                     "tracking_no",
                     "recipient",
@@ -963,6 +862,18 @@ class AdminOrderUpdateAPIView(APIView):
                     status_changed = True
                 order.shipping_status = payload["shipping_status"]
                 is_updated = True
+
+            if "product_order_status" in payload:
+                if payload["product_order_status"] != order.product_order_status:
+                    status_changed = True
+                order.product_order_status = payload["product_order_status"]
+                is_updated = True
+            elif any(key in payload for key in ("status", "payment_status", "shipping_status")):
+                next_product_order_status = _derive_product_order_status(order)
+                if next_product_order_status != order.product_order_status:
+                    order.product_order_status = next_product_order_status
+                    status_changed = True
+                    is_updated = True
 
             for field in (
                 "recipient",
@@ -1017,10 +928,9 @@ class AdminOrderUpdateAPIView(APIView):
                 return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
 
             order.save()
-            _ensure_settlement_record(order)
 
             refreshed = (
-                Order.objects.select_related("user", "settlement_record")
+                Order.objects.select_related("user")
                 .prefetch_related("items", "return_requests")
                 .get(id=order.id)
             )
@@ -1058,6 +968,7 @@ class AdminOrderUpdateAPIView(APIView):
                             "status",
                             "payment_status",
                             "shipping_status",
+                            "product_order_status",
                             "courier_name",
                             "tracking_no",
                             "recipient",
@@ -1921,11 +1832,6 @@ class AdminReturnRequestListCreateAPIView(APIView):
                 requested_amount=requested_amount,
             )
 
-            settlement = _ensure_settlement_record(order)
-            if settlement.status != SettlementRecord.Status.PAID:
-                settlement.status = SettlementRecord.Status.HOLD
-                settlement.save(update_fields=["status", "updated_at"])
-
         response_data = AdminReturnRequestSerializer(return_request).data
         if not has_full_pii_access(request.user):
             response_data = apply_masking_to_returns(response_data)
@@ -2043,25 +1949,8 @@ class AdminReturnRequestUpdateAPIView(APIView):
                 else:
                     order.status = Order.Status.PARTIAL_REFUNDED
                 order.payment_status = Order.PaymentStatus.CANCELED
-                order.save(update_fields=["status", "payment_status", "updated_at"])
-
-            settlement = _ensure_settlement_record(order)
-            if settlement.status != SettlementRecord.Status.PAID:
-                has_open_return = order.return_requests.filter(
-                    status__in=[
-                        ReturnRequest.Status.REQUESTED,
-                        ReturnRequest.Status.APPROVED,
-                        ReturnRequest.Status.PICKUP_SCHEDULED,
-                        ReturnRequest.Status.RECEIVED,
-                        ReturnRequest.Status.REFUNDING,
-                    ]
-                ).exists()
-                settlement.status = SettlementRecord.Status.HOLD if has_open_return else SettlementRecord.Status.PENDING
-                settlement.settlement_amount = (
-                    settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - _calculate_return_deduction(order)
-                )
-                settlement.return_deduction = _calculate_return_deduction(order)
-                settlement.save(update_fields=["status", "return_deduction", "settlement_amount", "updated_at"])
+                order.product_order_status = Order.ProductOrderStatus.RETURNED
+                order.save(update_fields=["status", "payment_status", "product_order_status", "updated_at"])
 
             refreshed = ReturnRequest.objects.select_related("order", "user").get(id=row.id)
             response_data = AdminReturnRequestSerializer(refreshed).data
@@ -2149,24 +2038,6 @@ class AdminReturnRequestUpdateAPIView(APIView):
             row_id = row.id
             row.delete()
 
-            settlement = SettlementRecord.objects.select_for_update().filter(order=order).first()
-            if settlement and settlement.status != SettlementRecord.Status.PAID:
-                has_open_return = order.return_requests.filter(
-                    status__in=[
-                        ReturnRequest.Status.REQUESTED,
-                        ReturnRequest.Status.APPROVED,
-                        ReturnRequest.Status.PICKUP_SCHEDULED,
-                        ReturnRequest.Status.RECEIVED,
-                        ReturnRequest.Status.REFUNDING,
-                    ]
-                ).exists()
-                settlement.status = SettlementRecord.Status.HOLD if has_open_return else SettlementRecord.Status.PENDING
-                settlement.return_deduction = _calculate_return_deduction(order)
-                settlement.settlement_amount = (
-                    settlement.gross_amount - settlement.pg_fee - settlement.platform_fee - settlement.return_deduction
-                )
-                settlement.save(update_fields=["status", "return_deduction", "settlement_amount", "updated_at"])
-
             response = success_response(message="반품/환불 요청이 삭제되었습니다.")
             save_idempotent_response(
                 request=request,
@@ -2186,256 +2057,6 @@ class AdminReturnRequestUpdateAPIView(APIView):
                 idempotency_key=idempotency_key,
             )
             return response
-
-
-class AdminSettlementListGenerateAPIView(APIView):
-    permission_classes = [AdminRBACPermission]
-    required_permissions = {
-        "GET": {AdminPermission.SETTLEMENT_VIEW},
-        "POST": {AdminPermission.SETTLEMENT_UPDATE},
-    }
-
-    def get(self, request, *args, **kwargs):
-        queryset = SettlementRecord.objects.select_related("order", "order__user").order_by("-created_at")
-
-        status_value = request.query_params.get("status")
-        if status_value:
-            queryset = queryset.filter(status=status_value)
-
-        q = request.query_params.get("q", "").strip()
-        if q:
-            queryset = queryset.filter(Q(order__order_no__icontains=q) | Q(order__user__email__icontains=q))
-
-        limit = request.query_params.get("limit", "200")
-        try:
-            limit_number = min(max(int(limit), 1), 500)
-        except (TypeError, ValueError):
-            limit_number = 200
-
-        data = AdminSettlementSerializer(queryset[:limit_number], many=True).data
-        if not has_full_pii_access(request.user):
-            data = apply_masking_to_settlements(data)
-        else:
-            _log_pii_view_if_needed(
-                request,
-                target_type="SettlementRecord",
-                metadata={"endpoint": "admin/settlements", "count": len(data)},
-            )
-        return success_response(data)
-
-    def post(self, request, *args, **kwargs):
-        serializer = AdminSettlementGenerateSerializer(data=request.data or {})
-        serializer.is_valid(raise_exception=True)
-        only_paid_orders = serializer.validated_data.get("only_paid_orders", True)
-        idempotency_key = extract_idempotency_key(request, serializer.validated_data)
-        request_hash = build_request_hash(serializer.validated_data)
-        replay_response = get_idempotent_replay_response(
-            key=idempotency_key,
-            action="admin.settlements.generate",
-            request_hash=request_hash,
-        )
-        if replay_response is not None:
-            return replay_response
-
-        queryset = Order.objects.all().order_by("-created_at")
-        if only_paid_orders:
-            queryset = queryset.filter(payment_status=Order.PaymentStatus.APPROVED)
-
-        upserted = []
-        for order in queryset[:1000]:
-            upserted.append(_ensure_settlement_record(order))
-
-        settlement_rows = AdminSettlementSerializer(upserted[:30], many=True).data
-        if not has_full_pii_access(request.user):
-            settlement_rows = apply_masking_to_settlements(settlement_rows)
-
-        response = success_response(
-            {
-                "generated_count": len(upserted),
-                "settlements": settlement_rows,
-            },
-            message="정산 레코드가 생성/갱신되었습니다.",
-            status_code=status.HTTP_201_CREATED,
-        )
-        save_idempotent_response(
-            request=request,
-            key=idempotency_key,
-            action="admin.settlements.generate",
-            request_hash=request_hash,
-            response=response,
-            target_type="SettlementRecord",
-            target_id="bulk",
-        )
-        log_audit_event(
-            request,
-            action="SETTLEMENT_RECORD_GENERATED",
-            target_type="SettlementRecord",
-            target_id="bulk",
-            metadata={"generated_count": len(upserted), "only_paid_orders": bool(only_paid_orders)},
-            idempotency_key=idempotency_key,
-        )
-        return response
-
-
-class AdminSettlementUpdateAPIView(APIView):
-    permission_classes = [AdminRBACPermission]
-    required_permissions = {
-        "PATCH": {AdminPermission.SETTLEMENT_UPDATE},
-        "DELETE": {AdminPermission.SETTLEMENT_UPDATE},
-    }
-
-    def patch(self, request, settlement_id: int, *args, **kwargs):
-        serializer = AdminSettlementUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        payload = serializer.validated_data
-        idempotency_key = extract_idempotency_key(request, payload)
-        request_hash = build_request_hash({k: v for k, v in payload.items() if k != "idempotency_key"})
-        replay_response = get_idempotent_replay_response(
-            key=idempotency_key,
-            action="admin.settlements.patch",
-            request_hash=request_hash,
-        )
-        if replay_response is not None:
-            return replay_response
-
-        with transaction.atomic():
-            settlement = get_object_or_404(
-                SettlementRecord.objects.select_related("order", "order__user").select_for_update(),
-                id=settlement_id,
-            )
-            before = _copy_for_audit(
-                settlement,
-                (
-                    "status",
-                    "pg_fee",
-                    "platform_fee",
-                    "return_deduction",
-                    "settlement_amount",
-                    "expected_payout_date",
-                    "paid_at",
-                    "memo",
-                ),
-            )
-
-            updated_fields = ["updated_at"]
-
-            for field in (
-                "status",
-                "pg_fee",
-                "platform_fee",
-                "return_deduction",
-                "expected_payout_date",
-                "memo",
-            ):
-                if field in payload:
-                    if field == "status":
-                        _assert_transition(settlement.status, payload["status"], SETTLEMENT_STATUS_TRANSITIONS, "정산")
-                    setattr(settlement, field, payload[field])
-                    updated_fields.append(field)
-
-            settlement.settlement_amount = (
-                int(settlement.gross_amount or 0)
-                - int(settlement.pg_fee or 0)
-                - int(settlement.platform_fee or 0)
-                - int(settlement.return_deduction or 0)
-            )
-            updated_fields.append("settlement_amount")
-
-            if payload.get("mark_paid"):
-                settlement.status = SettlementRecord.Status.PAID
-                settlement.paid_at = timezone.now()
-                updated_fields.extend(["status", "paid_at"])
-            elif settlement.status == SettlementRecord.Status.PAID and not settlement.paid_at:
-                settlement.paid_at = timezone.now()
-                updated_fields.append("paid_at")
-
-            settlement.save(update_fields=list(dict.fromkeys(updated_fields)))
-            response_data = AdminSettlementSerializer(settlement).data
-            if not has_full_pii_access(request.user):
-                response_data = apply_masking_to_settlements(response_data)
-            else:
-                _log_pii_view_if_needed(
-                    request,
-                    target_type="SettlementRecord",
-                    target_id=str(settlement.id),
-                    metadata={"endpoint": "admin/settlements/{id}"},
-                )
-
-            response = success_response(
-                response_data,
-                message="정산 정보가 업데이트되었습니다.",
-            )
-            save_idempotent_response(
-                request=request,
-                key=idempotency_key,
-                action="admin.settlements.patch",
-                request_hash=request_hash,
-                response=response,
-                target_type="SettlementRecord",
-                target_id=str(settlement.id),
-            )
-            log_audit_event(
-                request,
-                action="SETTLEMENT_UPDATED",
-                target_type="SettlementRecord",
-                target_id=str(settlement.id),
-                before=before,
-                after=_copy_for_audit(
-                    settlement,
-                    (
-                        "status",
-                        "pg_fee",
-                        "platform_fee",
-                        "return_deduction",
-                        "settlement_amount",
-                        "expected_payout_date",
-                        "paid_at",
-                        "memo",
-                    ),
-                ),
-                idempotency_key=idempotency_key,
-            )
-            return response
-
-    def delete(self, request, settlement_id: int, *args, **kwargs):
-        idempotency_key = extract_idempotency_key(request, {})
-        request_hash = build_request_hash({"settlement_id": settlement_id, "method": "DELETE"})
-        replay_response = get_idempotent_replay_response(
-            key=idempotency_key,
-            action="admin.settlements.delete",
-            request_hash=request_hash,
-        )
-        if replay_response is not None:
-            return replay_response
-
-        settlement = get_object_or_404(SettlementRecord, id=settlement_id)
-        if settlement.status == SettlementRecord.Status.PAID:
-            return error_response(
-                "INVALID_SETTLEMENT_STATUS",
-                "지급 완료된 정산은 삭제할 수 없습니다.",
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-        before = _copy_for_audit(settlement, ("status", "settlement_amount", "paid_at"))
-        settlement.delete()
-        response = success_response(message="정산 레코드가 삭제되었습니다.")
-        save_idempotent_response(
-            request=request,
-            key=idempotency_key,
-            action="admin.settlements.delete",
-            request_hash=request_hash,
-            response=response,
-            target_type="SettlementRecord",
-            target_id=str(settlement_id),
-        )
-        log_audit_event(
-            request,
-            action="SETTLEMENT_DELETED",
-            target_type="SettlementRecord",
-            target_id=str(settlement_id),
-            before=before,
-            idempotency_key=idempotency_key,
-        )
-        return response
 
 
 class AdminCouponListCreateAPIView(APIView):

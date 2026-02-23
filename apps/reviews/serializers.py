@@ -6,6 +6,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from apps.catalog.models import Product
+from apps.orders.models import Order, OrderItem
 
 from .models import Review, ReviewImage, ReviewReport
 
@@ -17,6 +18,54 @@ def has_valid_image_file(field_file) -> bool:
         return field_file.storage.exists(field_file.name)
     except Exception:
         return False
+
+
+def get_eligible_order_items_for_review(*, user, product_id: int | None = None):
+    queryset = (
+        OrderItem.objects.select_related("order", "product")
+        .filter(
+            order__user=user,
+            order__shipping_status=Order.ShippingStatus.DELIVERED,
+            order__payment_status=Order.PaymentStatus.APPROVED,
+            product__is_active=True,
+        )
+        .exclude(reviews__user=user)
+        .order_by("-order__delivered_at", "-order__created_at", "-id")
+    )
+
+    if product_id:
+        queryset = queryset.filter(product_id_snapshot=int(product_id))
+    return queryset
+
+
+def build_eligible_review_products(*, user) -> list[dict]:
+    rows = get_eligible_order_items_for_review(user=user)
+    products: dict[int, dict] = {}
+    for row in rows:
+        product_id = int(row.product_id_snapshot or 0)
+        if product_id <= 0:
+            continue
+
+        bucket = products.get(product_id)
+        if bucket is None:
+            bucket = {
+                "product_id": product_id,
+                "product_name": row.product_name_snapshot or (row.product.name if row.product else ""),
+                "reviewable_order_item_count": 0,
+                "latest_delivered_at": row.order.delivered_at,
+            }
+            products[product_id] = bucket
+
+        bucket["reviewable_order_item_count"] += 1
+
+    return list(products.values())
+
+
+class EligibleReviewProductSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField()
+    product_name = serializers.CharField()
+    reviewable_order_item_count = serializers.IntegerField()
+    latest_delivered_at = serializers.DateTimeField(allow_null=True)
 
 
 class ReviewImageSerializer(serializers.ModelSerializer):
@@ -150,6 +199,21 @@ class ReviewCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError("유효한 상품이 아닙니다.")
         return value
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        product_id = attrs.get("product_id")
+
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError("로그인 후 리뷰를 작성할 수 있습니다.")
+
+        eligible_item = get_eligible_order_items_for_review(user=user, product_id=product_id).first()
+        if not eligible_item:
+            raise serializers.ValidationError("배송완료된 실제 주문건이 있는 상품만 리뷰를 작성할 수 있습니다.")
+
+        attrs["_matched_order_item"] = eligible_item
+        return attrs
+
     def validate_images(self, files):
         max_images = settings.MAX_REVIEW_IMAGES
         if len(files) > max_images:
@@ -165,10 +229,12 @@ class ReviewCreateSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         images = validated_data.pop("images", [])
+        matched_order_item = validated_data.pop("_matched_order_item", None)
         product = Product.objects.get(id=validated_data["product_id"])
         review = Review.objects.create(
             product=product,
             user=self.context["request"].user,
+            order_item=matched_order_item,
             score=validated_data["score"],
             title=validated_data.get("title", ""),
             content=validated_data["content"],

@@ -554,56 +554,6 @@ paths:
       responses:
         '200':
           description: No response body
-  /api/v1/admin/settlements:
-    get:
-      operationId: v1_admin_settlements_retrieve
-      tags:
-      - v1
-      security:
-      - jwtAuth: []
-      responses:
-        '200':
-          description: No response body
-    post:
-      operationId: v1_admin_settlements_create
-      tags:
-      - v1
-      security:
-      - jwtAuth: []
-      responses:
-        '200':
-          description: No response body
-  /api/v1/admin/settlements/{settlement_id}:
-    patch:
-      operationId: v1_admin_settlements_partial_update
-      parameters:
-      - in: path
-        name: settlement_id
-        schema:
-          type: integer
-        required: true
-      tags:
-      - v1
-      security:
-      - jwtAuth: []
-      responses:
-        '200':
-          description: No response body
-    delete:
-      operationId: v1_admin_settlements_destroy
-      parameters:
-      - in: path
-        name: settlement_id
-        schema:
-          type: integer
-        required: true
-      tags:
-      - v1
-      security:
-      - jwtAuth: []
-      responses:
-        '204':
-          description: No response body
   /api/v1/admin/staff-users:
     get:
       operationId: v1_admin_staff_users_retrieve

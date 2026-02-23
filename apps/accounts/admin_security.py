@@ -19,8 +19,6 @@ class AdminPermission:
     RETURN_VIEW = "RETURN_VIEW"
     RETURN_UPDATE = "RETURN_UPDATE"
     REFUND_EXECUTE = "REFUND_EXECUTE"
-    SETTLEMENT_VIEW = "SETTLEMENT_VIEW"
-    SETTLEMENT_UPDATE = "SETTLEMENT_UPDATE"
     INQUIRY_VIEW = "INQUIRY_VIEW"
     INQUIRY_UPDATE = "INQUIRY_UPDATE"
     REVIEW_VIEW = "REVIEW_VIEW"
@@ -47,8 +45,6 @@ ROLE_PERMISSION_MATRIX: dict[str, set[str]] = {
         AdminPermission.RETURN_VIEW,
         AdminPermission.RETURN_UPDATE,
         AdminPermission.REFUND_EXECUTE,
-        AdminPermission.SETTLEMENT_VIEW,
-        AdminPermission.SETTLEMENT_UPDATE,
         AdminPermission.INQUIRY_VIEW,
         AdminPermission.INQUIRY_UPDATE,
         AdminPermission.REVIEW_VIEW,
@@ -102,8 +98,6 @@ ROLE_PERMISSION_MATRIX: dict[str, set[str]] = {
         AdminPermission.RETURN_VIEW,
         AdminPermission.RETURN_UPDATE,
         AdminPermission.REFUND_EXECUTE,
-        AdminPermission.SETTLEMENT_VIEW,
-        AdminPermission.SETTLEMENT_UPDATE,
         AdminPermission.USER_VIEW,
         AdminPermission.AUDIT_LOG_VIEW,
         AdminPermission.PII_FULL_VIEW,
@@ -124,7 +118,6 @@ ROLE_PERMISSION_MATRIX: dict[str, set[str]] = {
         AdminPermission.DASHBOARD_VIEW,
         AdminPermission.ORDER_VIEW,
         AdminPermission.RETURN_VIEW,
-        AdminPermission.SETTLEMENT_VIEW,
         AdminPermission.INQUIRY_VIEW,
         AdminPermission.REVIEW_VIEW,
         AdminPermission.PRODUCT_VIEW,
@@ -279,15 +272,6 @@ def apply_masking_to_returns(rows: list[dict[str, Any]] | dict[str, Any]) -> lis
             row["user_email"] = mask_email(str(row.get("user_email") or ""))
         if "order_no" in row:
             row["order_no"] = str(row.get("order_no") or "")
-    return targets[0] if is_single else targets
-
-
-def apply_masking_to_settlements(rows: list[dict[str, Any]] | dict[str, Any]) -> list[dict[str, Any]] | dict[str, Any]:
-    is_single = isinstance(rows, dict)
-    targets = [rows] if is_single else rows
-    for row in targets:
-        if "user_email" in row:
-            row["user_email"] = mask_email(str(row.get("user_email") or ""))
     return targets[0] if is_single else targets
 
 

@@ -33,6 +33,17 @@ class Order(models.Model):
         SHIPPED = "SHIPPED", "SHIPPED"
         DELIVERED = "DELIVERED", "DELIVERED"
 
+    class ProductOrderStatus(models.TextChoices):
+        PAYMENT_PENDING = "PAYMENT_PENDING", "PAYMENT_PENDING"
+        PAYMENT_COMPLETED = "PAYMENT_COMPLETED", "PAYMENT_COMPLETED"
+        SHIPPING = "SHIPPING", "SHIPPING"
+        DELIVERED = "DELIVERED", "DELIVERED"
+        PURCHASE_CONFIRMED = "PURCHASE_CONFIRMED", "PURCHASE_CONFIRMED"
+        EXCHANGE = "EXCHANGE", "EXCHANGE"
+        RETURNED = "RETURNED", "RETURNED"
+        CANCELED = "CANCELED", "CANCELED"
+        UNPAID_CANCELED = "UNPAID_CANCELED", "UNPAID_CANCELED"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="orders")
     order_no = models.CharField(max_length=32, unique=True, default=generate_order_no)
@@ -51,6 +62,11 @@ class Order(models.Model):
 
     payment_status = models.CharField(max_length=24, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID)
     shipping_status = models.CharField(max_length=24, choices=ShippingStatus.choices, default=ShippingStatus.READY)
+    product_order_status = models.CharField(
+        max_length=32,
+        choices=ProductOrderStatus.choices,
+        default=ProductOrderStatus.PAYMENT_PENDING,
+    )
 
     courier_name = models.CharField(max_length=100, blank=True)
     tracking_no = models.CharField(max_length=100, blank=True)
@@ -126,33 +142,3 @@ class ReturnRequest(models.Model):
 
     def __str__(self) -> str:
         return f"Return {self.order.order_no} ({self.status})"
-
-
-class SettlementRecord(models.Model):
-    class Status(models.TextChoices):
-        PENDING = "PENDING", "PENDING"
-        HOLD = "HOLD", "HOLD"
-        SCHEDULED = "SCHEDULED", "SCHEDULED"
-        PAID = "PAID", "PAID"
-
-    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name="settlement_record")
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
-    gross_amount = models.IntegerField(default=0)
-    discount_amount = models.IntegerField(default=0)
-    shipping_fee = models.IntegerField(default=0)
-    pg_fee = models.IntegerField(default=0)
-    platform_fee = models.IntegerField(default=0)
-    return_deduction = models.IntegerField(default=0)
-    settlement_amount = models.IntegerField(default=0)
-    expected_payout_date = models.DateField(null=True, blank=True)
-    paid_at = models.DateTimeField(null=True, blank=True)
-    memo = models.TextField(blank=True)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["-created_at", "-id"]
-
-    def __str__(self) -> str:
-        return f"Settlement {self.order.order_no} ({self.status})"

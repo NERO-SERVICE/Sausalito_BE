@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import BankTransferRequest, PaymentTransaction, WebhookEvent
+from .models import BankTransferAccountConfig, BankTransferRequest, PaymentTransaction, WebhookEvent
 
 
 @admin.register(PaymentTransaction)
@@ -32,3 +32,18 @@ class BankTransferRequestAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "bank_name")
     search_fields = ("order__order_no", "user__email", "depositor_name", "depositor_phone", "idempotency_key")
+
+
+@admin.register(BankTransferAccountConfig)
+class BankTransferAccountConfigAdmin(admin.ModelAdmin):
+    list_display = (
+        "bank_name",
+        "bank_account_no",
+        "account_holder",
+        "business_name",
+        "business_no",
+        "support_phone",
+        "support_email",
+        "updated_at",
+    )
+    search_fields = ("bank_name", "bank_account_no", "account_holder", "business_name", "support_phone", "support_email")

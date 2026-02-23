@@ -6,7 +6,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import AuditLog, User
 from apps.catalog.models import Product
 from apps.orders.models import Order, OrderItem
-from apps.payments.models import BankTransferRequest, PaymentTransaction
+from apps.payments.models import BankTransferAccountConfig, BankTransferRequest, PaymentTransaction
 
 
 class BankTransferPaymentFlowTestCase(TestCase):
@@ -65,6 +65,99 @@ class BankTransferPaymentFlowTestCase(TestCase):
             quantity=2,
             line_total=self.product.price * 2,
         )
+
+    def test_public_bank_transfer_account_info_is_loaded_from_server_config(self):
+        BankTransferAccountConfig.objects.create(
+            singleton_key=1,
+            bank_name="신한은행",
+            bank_account_no="110-555-012345",
+            account_holder="소살리토",
+            guide_message="입금 후 관리자 확인이 완료되면 결제완료 처리됩니다.",
+            verification_notice="입금자명은 주문자명과 동일하게 입력해 주세요.",
+            cash_receipt_guide="결제완료 후 마이페이지 또는 고객센터에서 현금영수증 발급을 요청할 수 있습니다.",
+            business_name="주식회사 네로",
+            business_no="123-45-67890",
+            ecommerce_no="2026-서울마포-0001",
+            support_phone="1588-1234",
+            support_email="cs@nero.ai.kr",
+            support_hours="평일 10:00 - 18:00 / 점심 12:30 - 13:30",
+        )
+
+        response = self.client.get("/api/v1/payments/bank-transfer/account-info")
+        self.assertEqual(response.status_code, 200)
+        data = response.data["data"]
+        self.assertEqual(data["bank_name"], "신한은행")
+        self.assertEqual(data["bank_account_no"], "110-555-012345")
+        self.assertEqual(data["account_holder"], "소살리토")
+        self.assertEqual(data["guide_message"], "입금 후 관리자 확인이 완료되면 결제완료 처리됩니다.")
+        self.assertEqual(data["verification_notice"], "입금자명은 주문자명과 동일하게 입력해 주세요.")
+        self.assertEqual(
+            data["cash_receipt_guide"],
+            "결제완료 후 마이페이지 또는 고객센터에서 현금영수증 발급을 요청할 수 있습니다.",
+        )
+        self.assertEqual(data["business_info"]["name"], "주식회사 네로")
+        self.assertEqual(data["business_info"]["business_no"], "123-45-67890")
+        self.assertEqual(data["business_info"]["ecommerce_no"], "2026-서울마포-0001")
+        self.assertEqual(data["support_info"]["phone"], "1588-1234")
+        self.assertEqual(data["support_info"]["email"], "cs@nero.ai.kr")
+        self.assertEqual(data["support_info"]["hours"], "평일 10:00 - 18:00 / 점심 12:30 - 13:30")
+
+    def test_bank_transfer_request_uses_server_managed_account(self):
+        BankTransferAccountConfig.objects.create(
+            singleton_key=1,
+            bank_name="신한은행",
+            bank_account_no="110-555-012345",
+            account_holder="소살리토",
+        )
+
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.post(
+            "/api/v1/payments/bank-transfer/requests",
+            {
+                "order_no": self.order.order_no,
+                "depositor_name": "홍길동",
+                "depositor_phone": "01012341234",
+                "transfer_note": "테스트 입금",
+                "idempotency_key": "bank-transfer-config-1",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        transfer = BankTransferRequest.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(transfer.bank_name, "신한은행")
+        self.assertEqual(transfer.bank_account_no, "110-555-012345")
+        self.assertEqual(transfer.account_holder, "소살리토")
+
+    def test_admin_can_update_bank_transfer_account_config(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.patch(
+            "/api/v1/admin/bank-transfer/account-info",
+            {
+                "bank_name": "신한은행",
+                "bank_account_no": "110-555-012345",
+                "account_holder": "소살리토",
+                "guide_message": "입금 후 관리자 확인이 완료되면 결제완료 처리됩니다.",
+                "verification_notice": "입금자명은 주문자명과 동일하게 입력해 주세요.",
+                "cash_receipt_guide": "결제완료 후 마이페이지 또는 고객센터에서 현금영수증 발급을 요청할 수 있습니다.",
+                "business_name": "주식회사 네로",
+                "business_no": "123-45-67890",
+                "ecommerce_no": "2026-서울마포-0001",
+                "support_phone": "1588-1234",
+                "support_email": "cs@nero.ai.kr",
+                "support_hours": "평일 10:00 - 18:00 / 점심 12:30 - 13:30",
+                "idempotency_key": "bank-account-config-update-1",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        row = BankTransferAccountConfig.objects.get(singleton_key=1)
+        self.assertEqual(row.bank_name, "신한은행")
+        self.assertEqual(row.bank_account_no, "110-555-012345")
+        self.assertEqual(row.account_holder, "소살리토")
+        self.assertEqual(row.business_name, "주식회사 네로")
+        self.assertEqual(row.business_no, "123-45-67890")
 
     def test_customer_can_create_bank_transfer_request(self):
         self.client.force_authenticate(user=self.customer)

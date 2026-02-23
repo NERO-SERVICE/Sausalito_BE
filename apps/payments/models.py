@@ -103,3 +103,35 @@ class BankTransferRequest(models.Model):
             models.Index(fields=["status", "created_at"]),
             models.Index(fields=["order", "status"]),
         ]
+
+
+class BankTransferAccountConfig(models.Model):
+    # 싱글톤 설정 테이블로 사용하기 위한 고정 키
+    singleton_key = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
+    bank_name = models.CharField(max_length=100, default="신한은행")
+    bank_account_no = models.CharField(max_length=50, default="110-555-012345")
+    account_holder = models.CharField(max_length=100, default="소살리토")
+    guide_message = models.CharField(max_length=255, default="입금 후 관리자 확인이 완료되면 결제완료 처리됩니다.")
+    verification_notice = models.CharField(max_length=255, default="입금자명은 주문자명과 동일하게 입력해 주세요.")
+    cash_receipt_guide = models.CharField(
+        max_length=255,
+        default="결제완료 후 마이페이지 또는 고객센터에서 현금영수증 발급을 요청할 수 있습니다.",
+    )
+    business_name = models.CharField(max_length=150, default="주식회사 네로")
+    business_ceo_name = models.CharField(max_length=120, blank=True, default="")
+    business_no = models.CharField(max_length=40, default="123-45-67890")
+    ecommerce_no = models.CharField(max_length=80, default="2026-서울마포-0001")
+    business_address = models.CharField(max_length=255, blank=True, default="")
+    support_phone = models.CharField(max_length=60, default="1588-1234")
+    support_email = models.CharField(max_length=120, default="cs@nero.ai.kr")
+    support_hours = models.CharField(max_length=150, default="평일 10:00 - 18:00 / 점심 12:30 - 13:30")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name = "Bank Transfer Account Config"
+        verbose_name_plural = "Bank Transfer Account Config"
+
+    def __str__(self) -> str:
+        return f"{self.bank_name} {self.bank_account_no} ({self.account_holder})"
