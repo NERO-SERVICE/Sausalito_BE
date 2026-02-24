@@ -13,11 +13,11 @@ from apps.common.response import success_response
 
 from .models import Review, ReviewReport
 from .serializers import (
-    EligibleReviewProductSerializer,
+    EligibleReviewOrderItemSerializer,
     ReviewCreateSerializer,
     ReviewListSerializer,
     ReviewReportCreateSerializer,
-    build_eligible_review_products,
+    build_eligible_review_order_items,
 )
 
 
@@ -118,8 +118,10 @@ class ReviewEligibleProductsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        rows = build_eligible_review_products(user=request.user)
-        serializer = EligibleReviewProductSerializer(rows, many=True)
+        product_id_param = request.query_params.get("product_id")
+        product_id = int(product_id_param) if str(product_id_param).isdigit() else None
+        rows = build_eligible_review_order_items(user=request.user, product_id=product_id)
+        serializer = EligibleReviewOrderItemSerializer(rows, many=True)
         return success_response(serializer.data)
 
 

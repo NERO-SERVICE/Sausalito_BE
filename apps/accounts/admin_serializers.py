@@ -24,6 +24,10 @@ from .admin_security import get_admin_permissions
 from .models import OneToOneInquiry, SupportFaq, SupportNotice, User, UserCoupon
 
 PRODUCT_PACKAGE_MONTHS = (1, 2, 3, 6)
+REVIEW_ELIGIBLE_PRODUCT_ORDER_STATUSES = {
+    Order.ProductOrderStatus.DELIVERED,
+    Order.ProductOrderStatus.PURCHASE_CONFIRMED,
+}
 PRODUCT_PACKAGE_NAME_MAP = {
     1: "1개월분",
     2: "2개월분 (1+1)",
@@ -162,8 +166,40 @@ class AdminOrderSerializer(serializers.ModelSerializer):
     def get_items(self, obj: Order) -> list[dict]:
         prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("items")
         items = prefetched if prefetched is not None else obj.items.all()
+        item_ids = [int(item.id) for item in items if getattr(item, "id", None)]
+
+        review_by_order_item_id: dict[int, Review] = {}
+        if obj.user_id and item_ids:
+            review_queryset = (
+                Review.objects.filter(order_item_id__in=item_ids, user_id=obj.user_id)
+                .exclude(status=Review.Status.DELETED)
+                .order_by("-id")
+            )
+            for review in review_queryset:
+                key = int(review.order_item_id or 0)
+                if key <= 0 or key in review_by_order_item_id:
+                    continue
+                review_by_order_item_id[key] = review
+
         rows: list[dict] = []
         for item in items:
+            review = review_by_order_item_id.get(int(item.id))
+            if review:
+                review_status = "COMPLETED"
+                review_status_label = "작성완료"
+                review_status_tone = "success"
+                review_id = int(review.id)
+            elif obj.user_id and obj.product_order_status in REVIEW_ELIGIBLE_PRODUCT_ORDER_STATUSES:
+                review_status = "AVAILABLE"
+                review_status_label = "작성가능"
+                review_status_tone = "progress"
+                review_id = None
+            else:
+                review_status = "UNAVAILABLE"
+                review_status_label = "작성불가"
+                review_status_tone = "muted"
+                review_id = None
+
             rows.append(
                 {
                     "id": int(item.id),
@@ -173,6 +209,10 @@ class AdminOrderSerializer(serializers.ModelSerializer):
                     "unit_price": int(item.unit_price or 0),
                     "quantity": int(item.quantity or 0),
                     "line_total": int(item.line_total or 0),
+                    "review_status": review_status,
+                    "review_status_label": review_status_label,
+                    "review_status_tone": review_status_tone,
+                    "review_id": review_id,
                 }
             )
         return rows

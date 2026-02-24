@@ -43,6 +43,12 @@ class Review(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "order_item"],
+                name="uniq_review_user_order_item",
+            )
+        ]
 
 
 class ReviewImage(models.Model):

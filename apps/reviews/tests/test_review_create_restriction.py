@@ -38,6 +38,7 @@ class ReviewCreateRestrictionTestCase(TestCase):
         product: Product,
         shipping_status: str = Order.ShippingStatus.DELIVERED,
         payment_status: str = Order.PaymentStatus.APPROVED,
+        product_order_status: str = Order.ProductOrderStatus.DELIVERED,
     ) -> OrderItem:
         delivered_at = timezone.now() if shipping_status == Order.ShippingStatus.DELIVERED else None
         order = Order.objects.create(
@@ -45,6 +46,7 @@ class ReviewCreateRestrictionTestCase(TestCase):
             status=Order.Status.PAID,
             payment_status=payment_status,
             shipping_status=shipping_status,
+            product_order_status=product_order_status,
             subtotal_amount=product.price,
             shipping_fee=0,
             discount_amount=0,
@@ -73,6 +75,7 @@ class ReviewCreateRestrictionTestCase(TestCase):
         response = self.client.post(
             "/api/v1/reviews",
             {
+                "order_item_id": 999999,
                 "product_id": self.product.id,
                 "score": 5,
                 "title": "리뷰",
@@ -82,7 +85,7 @@ class ReviewCreateRestrictionTestCase(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("배송완료된 실제 주문건", str(response.data))
+        self.assertIn("주문번호-주문상품", str(response.data))
         self.assertEqual(Review.objects.count(), 0)
 
     def test_create_review_matches_delivered_order_item(self):
@@ -92,6 +95,7 @@ class ReviewCreateRestrictionTestCase(TestCase):
         response = self.client.post(
             "/api/v1/reviews",
             {
+                "order_item_id": matched_item.id,
                 "product_id": self.product.id,
                 "score": 5,
                 "title": "실구매 후기",
@@ -106,13 +110,62 @@ class ReviewCreateRestrictionTestCase(TestCase):
         self.assertEqual(review.product_id, self.product.id)
         self.assertEqual(review.order_item_id, matched_item.id)
 
+    def test_create_review_matches_purchase_confirmed_order_item(self):
+        matched_item = self._create_order_item(
+            user=self.user,
+            product=self.product,
+            product_order_status=Order.ProductOrderStatus.PURCHASE_CONFIRMED,
+        )
+        self.client.force_authenticate(self.user)
+
+        response = self.client.post(
+            "/api/v1/reviews",
+            {
+                "order_item_id": matched_item.id,
+                "product_id": self.product.id,
+                "score": 5,
+                "title": "구매확정 후기",
+                "content": "구매확정 상태에서 작성",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        review = Review.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(review.order_item_id, matched_item.id)
+
+    def test_create_review_rejects_non_reviewable_product_order_status(self):
+        shipping_item = self._create_order_item(
+            user=self.user,
+            product=self.product,
+            shipping_status=Order.ShippingStatus.SHIPPED,
+            product_order_status=Order.ProductOrderStatus.SHIPPING,
+        )
+        self.client.force_authenticate(self.user)
+
+        response = self.client.post(
+            "/api/v1/reviews",
+            {
+                "order_item_id": shipping_item.id,
+                "product_id": self.product.id,
+                "score": 4,
+                "title": "작성 시도",
+                "content": "배송중 상태에서는 작성 불가",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("주문번호-주문상품", str(response.data))
+
     def test_same_order_item_cannot_be_reviewed_twice(self):
-        self._create_order_item(user=self.user, product=self.product)
+        order_item = self._create_order_item(user=self.user, product=self.product)
         self.client.force_authenticate(self.user)
 
         first = self.client.post(
             "/api/v1/reviews",
             {
+                "order_item_id": order_item.id,
                 "product_id": self.product.id,
                 "score": 4,
                 "title": "첫 리뷰",
@@ -123,6 +176,7 @@ class ReviewCreateRestrictionTestCase(TestCase):
         second = self.client.post(
             "/api/v1/reviews",
             {
+                "order_item_id": order_item.id,
                 "product_id": self.product.id,
                 "score": 5,
                 "title": "두번째 리뷰",
@@ -133,17 +187,54 @@ class ReviewCreateRestrictionTestCase(TestCase):
 
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 400)
-        self.assertIn("배송완료된 실제 주문건", str(second.data))
+        self.assertIn("주문번호-주문상품", str(second.data))
         self.assertEqual(Review.objects.count(), 1)
+
+    def test_same_product_can_be_reviewed_once_per_purchase_order_item(self):
+        first_item = self._create_order_item(user=self.user, product=self.product)
+        second_item = self._create_order_item(user=self.user, product=self.product)
+        self.client.force_authenticate(self.user)
+
+        first = self.client.post(
+            "/api/v1/reviews",
+            {
+                "order_item_id": first_item.id,
+                "product_id": self.product.id,
+                "score": 5,
+                "title": "첫 구매 후기",
+                "content": "2월 3일 주문건 후기",
+            },
+            format="json",
+        )
+        second = self.client.post(
+            "/api/v1/reviews",
+            {
+                "order_item_id": second_item.id,
+                "product_id": self.product.id,
+                "score": 4,
+                "title": "두번째 구매 후기",
+                "content": "2월 7일 주문건 후기",
+            },
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(Review.objects.count(), 2)
+        self.assertEqual(
+            set(Review.objects.values_list("order_item_id", flat=True)),
+            {first_item.id, second_item.id},
+        )
 
     def test_eligible_products_endpoint_returns_only_reviewable_rows(self):
         consumed = self._create_order_item(user=self.user, product=self.product)
-        self._create_order_item(user=self.user, product=self.product)
+        remaining = self._create_order_item(user=self.user, product=self.product)
         self._create_order_item(
             user=self.user,
             product=self.product,
             shipping_status=Order.ShippingStatus.PREPARING,
             payment_status=Order.PaymentStatus.APPROVED,
+            product_order_status=Order.ProductOrderStatus.PAYMENT_COMPLETED,
         )
         self._create_order_item(user=self.other_user, product=self.product)
         Review.objects.create(
@@ -161,5 +252,7 @@ class ReviewCreateRestrictionTestCase(TestCase):
 
         rows = response.data["data"]
         self.assertEqual(len(rows), 1)
+        self.assertEqual(int(rows[0]["order_item_id"]), remaining.id)
+        self.assertEqual(rows[0]["order_no"], remaining.order.order_no)
         self.assertEqual(int(rows[0]["product_id"]), self.product.id)
-        self.assertEqual(int(rows[0]["reviewable_order_item_count"]), 1)
+        self.assertEqual(rows[0]["product_order_status"], Order.ProductOrderStatus.DELIVERED)

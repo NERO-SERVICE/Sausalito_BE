@@ -4,7 +4,9 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.accounts.models import AuditLog, IdempotencyRecord, User
-from apps.orders.models import Order, ReturnRequest
+from apps.catalog.models import Product
+from apps.orders.models import Order, OrderItem, ReturnRequest
+from apps.reviews.models import Review
 
 
 class AdminSecurityTestCase(TestCase):
@@ -54,6 +56,23 @@ class AdminSecurityTestCase(TestCase):
             road_address="서울특별시 중구 세종대로 110",
             jibun_address="서울 중구 태평로1가 31",
             detail_address="201호",
+        )
+        self.product = Product.objects.create(
+            name="리뷰상태 테스트 상품",
+            price=13000,
+            original_price=15000,
+            stock=100,
+            is_active=True,
+        )
+        self.order_item = OrderItem.objects.create(
+            order=self.order,
+            product=self.product,
+            product_id_snapshot=self.product.id,
+            product_name_snapshot=self.product.name,
+            option_name_snapshot="1개월분",
+            unit_price=self.product.price,
+            quantity=1,
+            line_total=self.product.price,
         )
 
         self.return_request = ReturnRequest.objects.create(
@@ -115,6 +134,42 @@ class AdminSecurityTestCase(TestCase):
         self.assertNotEqual(first["road_address"], self.order.road_address)
         self.assertIn("payment_method", first)
         self.assertIn("latest_payment_provider", first)
+
+    def test_order_item_rows_include_review_status(self):
+        self.order.product_order_status = Order.ProductOrderStatus.DELIVERED
+        self.order.shipping_status = Order.ShippingStatus.DELIVERED
+        self.order.save(update_fields=["product_order_status", "shipping_status", "updated_at"])
+
+        self.client.force_authenticate(user=self.ops_admin)
+        initial = self.client.get("/api/v1/admin/orders")
+        self.assertEqual(initial.status_code, 200)
+
+        rows = initial.data["data"]
+        target = next((row for row in rows if row["order_no"] == self.order.order_no), None)
+        self.assertIsNotNone(target)
+        self.assertTrue(target["items"])
+        self.assertEqual(target["items"][0]["review_status"], "AVAILABLE")
+        self.assertEqual(target["items"][0]["review_status_label"], "작성가능")
+
+        Review.objects.create(
+            product=self.product,
+            user=self.customer,
+            order_item=self.order_item,
+            score=5,
+            title="구매 후기",
+            content="테스트 리뷰",
+        )
+
+        after = self.client.get("/api/v1/admin/orders")
+        self.assertEqual(after.status_code, 200)
+
+        rows_after = after.data["data"]
+        target_after = next((row for row in rows_after if row["order_no"] == self.order.order_no), None)
+        self.assertIsNotNone(target_after)
+        self.assertTrue(target_after["items"])
+        self.assertEqual(target_after["items"][0]["review_status"], "COMPLETED")
+        self.assertEqual(target_after["items"][0]["review_status_label"], "작성완료")
+        self.assertGreater(int(target_after["items"][0]["review_id"] or 0), 0)
 
     def test_order_list_full_pii_for_finance_and_logs_view(self):
         self.client.force_authenticate(user=self.finance_admin)

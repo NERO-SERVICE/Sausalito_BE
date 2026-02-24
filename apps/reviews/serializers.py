@@ -20,13 +20,21 @@ def has_valid_image_file(field_file) -> bool:
         return False
 
 
-def get_eligible_order_items_for_review(*, user, product_id: int | None = None):
+def get_eligible_order_items_for_review(
+    *,
+    user,
+    product_id: int | None = None,
+    order_item_id: int | None = None,
+):
+    eligible_product_order_statuses = (
+        Order.ProductOrderStatus.DELIVERED,
+        Order.ProductOrderStatus.PURCHASE_CONFIRMED,
+    )
     queryset = (
         OrderItem.objects.select_related("order", "product")
         .filter(
             order__user=user,
-            order__shipping_status=Order.ShippingStatus.DELIVERED,
-            order__payment_status=Order.PaymentStatus.APPROVED,
+            order__product_order_status__in=eligible_product_order_statuses,
             product__is_active=True,
         )
         .exclude(reviews__user=user)
@@ -35,37 +43,46 @@ def get_eligible_order_items_for_review(*, user, product_id: int | None = None):
 
     if product_id:
         queryset = queryset.filter(product_id_snapshot=int(product_id))
+    if order_item_id:
+        queryset = queryset.filter(id=int(order_item_id))
     return queryset
 
 
-def build_eligible_review_products(*, user) -> list[dict]:
-    rows = get_eligible_order_items_for_review(user=user)
-    products: dict[int, dict] = {}
+def build_eligible_review_order_items(*, user, product_id: int | None = None) -> list[dict]:
+    rows = get_eligible_order_items_for_review(user=user, product_id=product_id)
+    order_items: list[dict] = []
     for row in rows:
-        product_id = int(row.product_id_snapshot or 0)
-        if product_id <= 0:
+        resolved_product_id = int(row.product_id_snapshot or (row.product.id if row.product_id and row.product else 0))
+        if resolved_product_id <= 0:
             continue
 
-        bucket = products.get(product_id)
-        if bucket is None:
-            bucket = {
-                "product_id": product_id,
+        order_items.append(
+            {
+                "order_item_id": row.id,
+                "order_no": row.order.order_no,
+                "product_id": resolved_product_id,
                 "product_name": row.product_name_snapshot or (row.product.name if row.product else ""),
-                "reviewable_order_item_count": 0,
-                "latest_delivered_at": row.order.delivered_at,
+                "option_name": row.option_name_snapshot or "",
+                "quantity": row.quantity,
+                "ordered_at": row.order.created_at,
+                "delivered_at": row.order.delivered_at,
+                "product_order_status": row.order.product_order_status,
             }
-            products[product_id] = bucket
+        )
 
-        bucket["reviewable_order_item_count"] += 1
-
-    return list(products.values())
+    return order_items
 
 
-class EligibleReviewProductSerializer(serializers.Serializer):
+class EligibleReviewOrderItemSerializer(serializers.Serializer):
+    order_item_id = serializers.IntegerField()
+    order_no = serializers.CharField()
     product_id = serializers.IntegerField()
     product_name = serializers.CharField()
-    reviewable_order_item_count = serializers.IntegerField()
-    latest_delivered_at = serializers.DateTimeField(allow_null=True)
+    option_name = serializers.CharField(allow_blank=True)
+    quantity = serializers.IntegerField()
+    ordered_at = serializers.DateTimeField()
+    delivered_at = serializers.DateTimeField(allow_null=True)
+    product_order_status = serializers.CharField()
 
 
 class ReviewImageSerializer(serializers.ModelSerializer):
@@ -184,7 +201,8 @@ class ReviewListSerializer(serializers.ModelSerializer):
 
 
 class ReviewCreateSerializer(serializers.Serializer):
-    product_id = serializers.IntegerField()
+    order_item_id = serializers.IntegerField()
+    product_id = serializers.IntegerField(required=False)
     score = serializers.IntegerField(min_value=1, max_value=5)
     title = serializers.CharField(max_length=255, required=False, allow_blank=True)
     content = serializers.CharField()
@@ -202,16 +220,28 @@ class ReviewCreateSerializer(serializers.Serializer):
     def validate(self, attrs):
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        product_id = attrs.get("product_id")
+        order_item_id = attrs.get("order_item_id")
 
         if not user or not user.is_authenticated:
             raise serializers.ValidationError("로그인 후 리뷰를 작성할 수 있습니다.")
 
-        eligible_item = get_eligible_order_items_for_review(user=user, product_id=product_id).first()
+        eligible_item = get_eligible_order_items_for_review(user=user, order_item_id=order_item_id).first()
         if not eligible_item:
-            raise serializers.ValidationError("배송완료된 실제 주문건이 있는 상품만 리뷰를 작성할 수 있습니다.")
+            raise serializers.ValidationError(
+                "상품주문상태가 배송완료 또는 구매확정인 실제 주문건(주문번호-주문상품)만 리뷰를 작성할 수 있습니다."
+            )
+
+        if not eligible_item.product_id or not eligible_item.product or not eligible_item.product.is_active:
+            raise serializers.ValidationError("리뷰 작성 가능한 상품 정보를 확인할 수 없습니다.")
+
+        matched_product_id = int(eligible_item.product_id_snapshot or eligible_item.product.id)
+        requested_product_id = attrs.get("product_id")
+        if requested_product_id and int(requested_product_id) != matched_product_id:
+            raise serializers.ValidationError("선택한 주문건과 상품 정보가 일치하지 않습니다.")
 
         attrs["_matched_order_item"] = eligible_item
+        attrs["_matched_product"] = eligible_item.product
+        attrs["product_id"] = matched_product_id
         return attrs
 
     def validate_images(self, files):
@@ -230,7 +260,7 @@ class ReviewCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         images = validated_data.pop("images", [])
         matched_order_item = validated_data.pop("_matched_order_item", None)
-        product = Product.objects.get(id=validated_data["product_id"])
+        product = validated_data.pop("_matched_product", None) or Product.objects.get(id=validated_data["product_id"])
         review = Review.objects.create(
             product=product,
             user=self.context["request"].user,
