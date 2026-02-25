@@ -17,11 +17,14 @@ health_check() {
   local retries=20
   local wait_seconds=3
   local i
+  local status_code
 
   for ((i = 1; i <= retries; i += 1)); do
-    if curl -fsS "http://127.0.0.1/healthz" >/dev/null; then
+    status_code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1/healthz" || true)"
+    if [ "${status_code}" = "200" ]; then
       return 0
     fi
+    echo "[deploy] health check attempt ${i}/${retries}: status=${status_code}"
     sleep "${wait_seconds}"
   done
 
