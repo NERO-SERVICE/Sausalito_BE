@@ -22,6 +22,7 @@ from .serializers import (
     ProductDetailMetaSerializer,
     ProductDetailSerializer,
     ProductListSerializer,
+    has_valid_image_file,
 )
 
 SORTING_MAP = {
@@ -52,19 +53,21 @@ class HomeBannerListAPIView(APIView):
         if raw_limit:
             limit = parse_limit(raw_limit, default=20, max_limit=100)
             banners = banners[:limit]
-        return success_response(HomeBannerSerializer(banners, many=True, context={"request": request}).data)
+        safe_banners = [row for row in banners if has_valid_image_file(row.image)]
+        return success_response(HomeBannerSerializer(safe_banners, many=True, context={"request": request}).data)
 
 
 class BrandBannerListAPIView(APIView):
     def get(self, request, *args, **kwargs):
         limit = parse_limit(request.query_params.get("limit"), default=2, max_limit=20)
-        banners = (
+        banners = list(
             HomeBanner.objects.filter(is_active=True)
             .exclude(image__isnull=True)
             .exclude(image="")
             .order_by("sort_order", "id")[:limit]
         )
-        return success_response(HomeBannerSerializer(banners, many=True, context={"request": request}).data)
+        safe_banners = [row for row in banners if has_valid_image_file(row.image)]
+        return success_response(HomeBannerSerializer(safe_banners, many=True, context={"request": request}).data)
 
 
 class BrandPageAPIView(APIView):

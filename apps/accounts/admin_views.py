@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.paginator import EmptyPage, Paginator
 from django.db import transaction
 from django.db.models import Count, Max, Q, Sum
@@ -2256,6 +2257,15 @@ class AdminHomeBannerListCreateAPIView(APIView):
         image_file = request.FILES.get("image")
         if image_file:
             row.image = image_file
+        try:
+            row.full_clean()
+        except DjangoValidationError as exc:
+            return error_response(
+                "INVALID_BANNER_PAYLOAD",
+                "배너 데이터가 유효하지 않습니다.",
+                details=exc.message_dict if hasattr(exc, "message_dict") else {"non_field_errors": exc.messages},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
         row.save()
 
         return success_response(
@@ -2302,6 +2312,16 @@ class AdminHomeBannerDetailAPIView(APIView):
 
         if not updated_fields:
             return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            row.full_clean()
+        except DjangoValidationError as exc:
+            return error_response(
+                "INVALID_BANNER_PAYLOAD",
+                "배너 데이터가 유효하지 않습니다.",
+                details=exc.message_dict if hasattr(exc, "message_dict") else {"non_field_errors": exc.messages},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
 
         row.save(update_fields=list(dict.fromkeys(updated_fields)))
         return success_response(

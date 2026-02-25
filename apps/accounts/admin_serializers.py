@@ -15,6 +15,7 @@ from apps.catalog.models import (
     ProductOption,
 )
 from apps.catalog.serializers import has_valid_image_file as has_valid_catalog_image_file
+from apps.common.media_utils import build_public_file_url
 from apps.orders.models import Order, ReturnRequest
 from apps.payments.models import PaymentTransaction
 from apps.reviews.models import Review, ReviewReport
@@ -491,10 +492,7 @@ class AdminReviewSerializer(serializers.ModelSerializer):
         for image in obj.images.all():
             if not has_valid_image_file(image.image):
                 continue
-            if request:
-                rows.append(request.build_absolute_uri(image.image.url))
-            else:
-                rows.append(image.image.url)
+            rows.append(build_public_file_url(image.image, request=request))
         return rows
 
     def _get_report_total_count(self, obj: Review) -> int:
@@ -649,10 +647,7 @@ class AdminHomeBannerSerializer(serializers.ModelSerializer):
     def get_image_url(self, obj: HomeBanner) -> str:
         if not has_valid_catalog_image_file(obj.image):
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        return build_public_file_url(obj.image, request=self.context.get("request"))
 
 
 class AdminBannerUpsertSerializer(serializers.Serializer):
@@ -698,10 +693,7 @@ class AdminBrandStorySectionSerializer(serializers.ModelSerializer):
     def get_image_url(self, obj: BrandStorySection) -> str:
         if not has_valid_catalog_image_file(obj.image):
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        return build_public_file_url(obj.image, request=self.context.get("request"))
 
 
 class AdminBrandStorySectionUpsertSerializer(serializers.Serializer):
@@ -723,10 +715,7 @@ class AdminProductImageSerializer(serializers.ModelSerializer):
     def get_image_url(self, obj: ProductImage) -> str:
         if not has_valid_catalog_image_file(obj.image):
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        return build_public_file_url(obj.image, request=self.context.get("request"))
 
 
 class AdminProductPackageOptionSerializer(serializers.Serializer):
@@ -792,10 +781,7 @@ class AdminProductManageSerializer(serializers.ModelSerializer):
             thumbnail = next((row for row in obj.images.all() if has_valid_catalog_image_file(row.image)), None)
         if not thumbnail:
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(thumbnail.image.url)
-        return thumbnail.image.url
+        return build_public_file_url(thumbnail.image, request=self.context.get("request"))
 
     def get_images(self, obj: Product) -> list[dict]:
         rows = [row for row in obj.images.all() if has_valid_catalog_image_file(row.image)]

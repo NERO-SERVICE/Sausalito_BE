@@ -6,18 +6,17 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from apps.catalog.models import Product
+from apps.common.media_utils import (
+    build_public_file_url,
+    has_accessible_file_reference,
+)
 from apps.orders.models import Order, OrderItem
 
 from .models import Review, ReviewImage, ReviewReport
 
 
 def has_valid_image_file(field_file) -> bool:
-    if not field_file or not getattr(field_file, "name", ""):
-        return False
-    try:
-        return field_file.storage.exists(field_file.name)
-    except Exception:
-        return False
+    return has_accessible_file_reference(field_file)
 
 
 def get_eligible_order_items_for_review(
@@ -95,10 +94,7 @@ class ReviewImageSerializer(serializers.ModelSerializer):
     def get_url(self, obj: ReviewImage) -> str:
         if not has_valid_image_file(obj.image):
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        return build_public_file_url(obj.image, request=self.context.get("request"))
 
 
 class ReviewListSerializer(serializers.ModelSerializer):
@@ -172,10 +168,7 @@ class ReviewListSerializer(serializers.ModelSerializer):
         first = next((image for image in obj.images.all() if has_valid_image_file(image.image)), None)
         if not first:
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(first.image.url)
-        return first.image.url
+        return build_public_file_url(first.image, request=self.context.get("request"))
 
     def get_answered_by(self, obj: Review) -> str:
         if not obj.admin_reply:

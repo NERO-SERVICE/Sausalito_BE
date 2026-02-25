@@ -11,7 +11,11 @@ __pycache__/
 !.env.prod.example
 .venv/
 venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 db.sqlite3
 media/
 staticfiles/
+nginx/conf.d/10-https.conf
 .DS_Store

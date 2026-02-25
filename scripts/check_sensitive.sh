@@ -13,13 +13,16 @@ if [ -n "$tracked_env_files" ]; then
 fi
 
 echo "[security] checking tracked files for common secret patterns..."
-if git ls-files | xargs rg -n \
+if git ls-files -z | xargs -0 rg -n \
   -e 'AKIA[0-9A-Z]{16}' \
   -e 'BEGIN [A-Z ]*PRIVATE KEY' \
   -e 'ghp_[A-Za-z0-9]{20,}' \
   -e 'xox[baprs]-[A-Za-z0-9-]+' \
   -e 'sk_live_[A-Za-z0-9]+' \
   -e 'AIza[0-9A-Za-z\-_]{35}' \
+  -e 'https?://[^/\s:@]+:[^/@\s]+@' \
+  -e 'KAKAO_REST_API_KEY\s*=\s*[0-9a-fA-F]{20,}' \
+  -e 'KAKAO_CLIENT_SECRET\s*=\s*[A-Za-z0-9]{16,}' \
   >/tmp/sausalito_sensitive_scan.out 2>/dev/null; then
   echo "[security][ERROR] possible secret detected:"
   cat /tmp/sausalito_sensitive_scan.out

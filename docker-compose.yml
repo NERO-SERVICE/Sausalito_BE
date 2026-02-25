@@ -1,0 +1,137 @@
+name: sausalito
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+    max-file: ${DOCKER_LOG_MAX_FILE:-5}
+
+x-django-service: &django-service
+  image: ${BACKEND_IMAGE:-ghcr.io/your-org/sausalito-be}:${IMAGE_TAG:-latest}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - ./.env.prod
+  environment:
+    DJANGO_SETTINGS_MODULE: config.settings.prod
+    DJANGO_MIGRATE_ON_START: "false"
+    DJANGO_COLLECTSTATIC_ON_START: "false"
+    WAIT_FOR_DB: "true"
+    WAIT_FOR_REDIS: "true"
+  volumes:
+    - django_static:/app/staticfiles
+    - django_media:/app/media
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  logging: *default-logging
+  healthcheck:
+    test:
+      [
+        "CMD-SHELL",
+        "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)\"",
+      ]
+    interval: 30s
+    timeout: 5s
+    retries: 5
+    start_period: 40s
+
+services:
+  db:
+    image: postgres:16-alpine
+    env_file:
+      - ./.env.prod
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--maxmemory",
+        "${REDIS_MAXMEMORY:-256mb}",
+        "--maxmemory-policy",
+        "${REDIS_MAXMEMORY_POLICY:-allkeys-lru}",
+      ]
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  app_blue:
+    <<: *django-service
+    container_name: sausalito_app_blue
+    expose:
+      - "8000"
+
+  app_green:
+    <<: *django-service
+    container_name: sausalito_app_green
+    expose:
+      - "8000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      app_blue:
+        condition: service_healthy
+      app_green:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - django_static:/var/www/static:ro
+      - django_media:/var/www/media:ro
+      - certbot_etc:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O - http://127.0.0.1/healthz || wget --no-check-certificate -q -O - https://127.0.0.1/healthz || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  certbot:
+    image: certbot/certbot:latest
+    profiles: ["tls"]
+    volumes:
+      - certbot_etc:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    restart: "no"
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  django_static:
+  django_media:
+  certbot_etc:
+  certbot_webroot:

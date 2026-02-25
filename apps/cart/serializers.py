@@ -4,6 +4,7 @@ from django.conf import settings
 from rest_framework import serializers
 
 from apps.catalog.models import Product, ProductOption
+from apps.common.media_utils import build_public_file_url
 
 from .models import Cart, CartItem
 
@@ -32,10 +33,9 @@ class CartItemSerializer(serializers.ModelSerializer):
 
     def get_product(self, obj: CartItem) -> dict:
         image = obj.product.images.filter(is_thumbnail=True).first() or obj.product.images.first()
-        request = self.context.get("request")
         image_url = ""
         if image and image.image:
-            image_url = request.build_absolute_uri(image.image.url) if request else image.image.url
+            image_url = build_public_file_url(image.image, request=self.context.get("request"))
         return {
             "id": obj.product.id,
             "name": obj.product.name,

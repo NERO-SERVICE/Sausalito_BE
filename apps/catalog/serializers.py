@@ -6,6 +6,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from apps.accounts.models import UserCoupon
+from apps.common.media_utils import build_public_file_url, has_accessible_file_reference
 
 from .models import (
     BrandPageSetting,
@@ -29,12 +30,7 @@ BADGE_LABEL_MAP = {
 
 
 def has_valid_image_file(field_file) -> bool:
-    if not field_file or not getattr(field_file, "name", ""):
-        return False
-    try:
-        return field_file.storage.exists(field_file.name)
-    except Exception:
-        return False
+    return has_accessible_file_reference(field_file)
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
@@ -47,10 +43,7 @@ class ProductImageSerializer(serializers.ModelSerializer):
     def get_url(self, obj: ProductImage) -> str:
         if not has_valid_image_file(obj.image):
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        return build_public_file_url(obj.image, request=self.context.get("request"))
 
 
 class ProductOptionSerializer(serializers.ModelSerializer):
@@ -106,10 +99,7 @@ class ProductListSerializer(serializers.ModelSerializer):
         if not thumbnail:
             return ""
 
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(thumbnail.image.url)
-        return thumbnail.image.url
+        return build_public_file_url(thumbnail.image, request=self.context.get("request"))
 
     def get_badges(self, obj: Product) -> list[str]:
         return [BADGE_LABEL_MAP.get(b.badge_type, b.badge_type) for b in obj.badges.all()]
@@ -289,10 +279,7 @@ class ProductDetailImageSerializer(serializers.ModelSerializer):
     def get_url(self, obj: ProductDetailImage) -> str:
         if not has_valid_image_file(obj.image):
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        return build_public_file_url(obj.image, request=self.context.get("request"))
 
 
 class ProductDetailMetaSerializer(serializers.ModelSerializer):
@@ -338,10 +325,7 @@ class HomeBannerSerializer(serializers.ModelSerializer):
     def get_image(self, obj: HomeBanner) -> str:
         if not has_valid_image_file(obj.image):
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        return build_public_file_url(obj.image, request=self.context.get("request"))
 
 
 class BrandPageSettingSerializer(serializers.ModelSerializer):
@@ -368,7 +352,4 @@ class BrandStorySectionSerializer(serializers.ModelSerializer):
     def get_image(self, obj: BrandStorySection) -> str:
         if not has_valid_image_file(obj.image):
             return ""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        return build_public_file_url(obj.image, request=self.context.get("request"))

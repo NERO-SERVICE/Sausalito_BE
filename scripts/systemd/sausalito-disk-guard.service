@@ -1,0 +1,13 @@
+[Unit]
+Description=Sausalito disk guard (docker prune on threshold)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sausalito_be
+Environment=DISK_GUARD_MOUNT_POINT=/
+Environment=DISK_GUARD_THRESHOLD_PERCENT=80
+ExecStart=/opt/sausalito_be/scripts/maintenance/disk_guard.sh
+StandardOutput=journal
+StandardError=journal

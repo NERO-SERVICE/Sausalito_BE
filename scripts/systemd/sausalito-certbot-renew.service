@@ -1,0 +1,11 @@
+[Unit]
+Description=Sausalito Let's Encrypt renew + nginx reload
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sausalito_be
+ExecStart=/opt/sausalito_be/scripts/ssl/renew_letsencrypt.sh
+StandardOutput=journal
+StandardError=journal
