@@ -134,17 +134,41 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT }}
-          timeout: 60s
-          command_timeout: 45m
+          timeout: 20s
+          command_timeout: 20m
           script_stop: true
           debug: true
           script: |
             set -euo pipefail
-            date -u
-            echo "[deploy] host=$(hostname)"
+            ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+            run_step() {
+              local timeout_seconds="$1"
+              local name="$2"
+              shift 2
+              echo "[deploy][$(ts)] START ${name} (timeout=${timeout_seconds}s)"
+              if timeout "${timeout_seconds}" "$@"; then
+                echo "[deploy][$(ts)] DONE  ${name}"
+              else
+                local code="$?"
+                if [ "${code}" -eq 124 ]; then
+                  echo "[deploy][$(ts)] ERROR ${name} timed out after ${timeout_seconds}s"
+                else
+                  echo "[deploy][$(ts)] ERROR ${name} failed with code ${code}"
+                fi
+                exit "${code}"
+              fi
+            }
+
+            echo "[deploy][$(ts)] host=$(hostname)"
             cd ${{ secrets.DEPLOY_PATH }}
-            echo "${{ secrets.GHCR_READ_TOKEN }}" | docker login ghcr.io -u "${{ env.GHCR_DEPLOY_USERNAME }}" --password-stdin
+            export GHCR_READ_TOKEN="${{ secrets.GHCR_READ_TOKEN }}"
+            export GHCR_DEPLOY_USERNAME="${{ env.GHCR_DEPLOY_USERNAME }}"
             export BACKEND_IMAGE=${{ env.IMAGE_NAME }}
             export IMAGE_TAG=${{ github.sha }}
-            docker pull ${BACKEND_IMAGE}:${IMAGE_TAG}
-            ./scripts/deploy_backend.sh
+            : "${GHCR_READ_TOKEN:?GHCR_READ_TOKEN is empty}"
+            : "${GHCR_DEPLOY_USERNAME:?GHCR_DEPLOY_USERNAME is empty}"
+
+            run_step 30 docker_info docker info
+            run_step 60 docker_login bash -lc 'echo "${GHCR_READ_TOKEN}" | docker login ghcr.io -u "${GHCR_DEPLOY_USERNAME}" --password-stdin'
+            run_step 600 docker_pull docker pull "${BACKEND_IMAGE}:${IMAGE_TAG}"
+            run_step 900 deploy_script ./scripts/deploy_backend.sh
