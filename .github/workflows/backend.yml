@@ -113,6 +113,20 @@ jobs:
     needs: build-and-push
     environment: production
     steps:
+      - name: Check SSH reachability from runner
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?DEPLOY_HOST is required}"
+          : "${DEPLOY_PORT:?DEPLOY_PORT is required}"
+          echo "Resolving ${DEPLOY_HOST}"
+          getent hosts "${DEPLOY_HOST}" || true
+          echo "Checking TCP ${DEPLOY_HOST}:${DEPLOY_PORT}"
+          timeout 10 bash -c "cat < /dev/null > /dev/tcp/${DEPLOY_HOST}/${DEPLOY_PORT}"
+          echo "TCP connectivity OK"
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -123,8 +137,11 @@ jobs:
           timeout: 60s
           command_timeout: 45m
           script_stop: true
+          debug: true
           script: |
             set -euo pipefail
+            date -u
+            echo "[deploy] host=$(hostname)"
             cd ${{ secrets.DEPLOY_PATH }}
             echo "${{ secrets.GHCR_READ_TOKEN }}" | docker login ghcr.io -u "${{ env.GHCR_DEPLOY_USERNAME }}" --password-stdin
             export BACKEND_IMAGE=${{ env.IMAGE_NAME }}
