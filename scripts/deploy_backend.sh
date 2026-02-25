@@ -32,8 +32,15 @@ health_check() {
 echo "[deploy] Pull latest images (tag: ${IMAGE_TAG})"
 compose pull db redis app_blue app_green nginx
 
+echo "[deploy] Verify backend image exists locally"
+if ! docker image inspect "${BACKEND_IMAGE:-ghcr.io/your-org/sausalito-be}:${IMAGE_TAG}" >/dev/null 2>&1; then
+  echo "[deploy][ERROR] backend image not found after pull: ${BACKEND_IMAGE:-ghcr.io/your-org/sausalito-be}:${IMAGE_TAG}"
+  echo "[deploy][ERROR] Check GHCR login and image tag."
+  exit 1
+fi
+
 echo "[deploy] Ensure database and redis are up"
-compose up -d db redis
+compose up -d --no-build db redis
 
 echo "[deploy] Run migrations"
 compose run --rm --no-deps app_blue python manage.py migrate --noinput
@@ -42,16 +49,16 @@ echo "[deploy] Collect static files"
 compose run --rm --no-deps app_blue python manage.py collectstatic --noinput
 
 echo "[deploy] Ensure nginx and both app pools are running"
-compose up -d nginx app_blue app_green
+compose up -d --no-build nginx app_blue app_green
 health_check
 
 echo "[deploy] Rolling update app_blue"
-compose up -d --no-deps app_blue
+compose up -d --no-build --no-deps app_blue
 compose exec -T nginx nginx -s reload
 health_check
 
 echo "[deploy] Rolling update app_green"
-compose up -d --no-deps app_green
+compose up -d --no-build --no-deps app_green
 compose exec -T nginx nginx -s reload
 health_check
 

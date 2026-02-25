@@ -37,7 +37,7 @@ if [ "${#domain_args[@]}" -eq 0 ]; then
 fi
 
 echo "[ssl] Starting stack in HTTP mode for ACME challenge..."
-compose up -d db redis app_blue app_green nginx
+compose up -d --no-build db redis app_blue app_green nginx
 
 extra_args=()
 if [ "${LETSENCRYPT_STAGING:-false}" = "true" ]; then
