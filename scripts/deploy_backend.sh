@@ -36,8 +36,8 @@ echo "[deploy] Pull latest images (tag: ${IMAGE_TAG})"
 compose pull db redis app_blue app_green nginx
 
 echo "[deploy] Verify backend image exists locally"
-if ! docker image inspect "${BACKEND_IMAGE:-ghcr.io/your-org/sausalito-be}:${IMAGE_TAG}" >/dev/null 2>&1; then
-  echo "[deploy][ERROR] backend image not found after pull: ${BACKEND_IMAGE:-ghcr.io/your-org/sausalito-be}:${IMAGE_TAG}"
+if ! docker image inspect "${BACKEND_IMAGE:-ghcr.io/nero-service/sausalito-be}:${IMAGE_TAG}" >/dev/null 2>&1; then
+  echo "[deploy][ERROR] backend image not found after pull: ${BACKEND_IMAGE:-ghcr.io/nero-service/sausalito-be}:${IMAGE_TAG}"
   echo "[deploy][ERROR] Check GHCR login and image tag."
   exit 1
 fi

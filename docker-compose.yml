@@ -7,7 +7,7 @@ x-default-logging: &default-logging
     max-file: ${DOCKER_LOG_MAX_FILE:-5}
 
 x-django-service: &django-service
-  image: ${BACKEND_IMAGE:-ghcr.io/your-org/sausalito-be}:${IMAGE_TAG:-latest}
+  image: ${BACKEND_IMAGE:-ghcr.io/nero-service/sausalito-be}:${IMAGE_TAG:-latest}
   build:
     context: .
     dockerfile: Dockerfile
