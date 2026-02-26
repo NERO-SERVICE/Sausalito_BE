@@ -173,3 +173,4 @@ jobs:
             run_step 60 docker_login bash -lc 'echo "${GHCR_READ_TOKEN}" | docker login ghcr.io -u "${GHCR_DEPLOY_USERNAME}" --password-stdin'
             run_step 600 docker_pull docker pull "${BACKEND_IMAGE}:${IMAGE_TAG}"
             run_step 900 deploy_script ./scripts/deploy_backend.sh
+            run_step 180 storage_smoke ./scripts/check_object_storage.sh

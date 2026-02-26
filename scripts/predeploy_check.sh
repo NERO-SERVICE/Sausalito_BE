@@ -22,5 +22,11 @@ bash -n scripts/maintenance/prune_docker.sh
 bash -n scripts/maintenance/disk_guard.sh
 bash -n scripts/maintenance/backup_postgres_to_object_storage.sh
 bash -n scripts/validate_env_prod.sh
+bash -n scripts/check_object_storage.sh
+
+if [ "${RUN_OBJECT_STORAGE_SMOKE_TEST:-false}" = "true" ]; then
+  echo "[predeploy] 5) object storage smoke test"
+  ./scripts/check_object_storage.sh
+fi
 
 echo "[predeploy] OK"

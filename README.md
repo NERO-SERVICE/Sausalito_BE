@@ -61,6 +61,14 @@ cp .env.local.example .env
 ```
 - `.env.prod` 필수값/placeholder/보안 설정을 점검합니다.
 - `localhost` 허용값은 사전 검증 단계에서 경고(warn)로 처리됩니다.
+- Object Storage 실검증이 필요하면 아래처럼 실행합니다.
+```bash
+RUN_OBJECT_STORAGE_SMOKE_TEST=true ./scripts/predeploy_check.sh
+```
+또는
+```bash
+./scripts/check_object_storage.sh
+```
 
 ## Environment Files
 - 로컬 개발: `.env.local.example` -> `.env` 복사 후 값 수정
