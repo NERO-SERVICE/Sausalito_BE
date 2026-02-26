@@ -113,6 +113,42 @@ jobs:
     needs: build-and-push
     environment: production
     steps:
+      - name: Validate SSH secret format
+        env:
+          DEPLOY_SSH_KEY_RAW: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SSH_KEY_RAW:?DEPLOY_SSH_KEY is required}"
+
+          key_file="$(mktemp)"
+          printf '%s\n' "${DEPLOY_SSH_KEY_RAW}" | sed 's/\r$//' > "${key_file}"
+          chmod 600 "${key_file}"
+
+          if ! grep -Eq '^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----$' "${key_file}"; then
+            echo "::error::DEPLOY_SSH_KEY is not a private key. Paste full private key with BEGIN/END lines."
+            exit 1
+          fi
+
+          if grep -q '\\n' "${key_file}"; then
+            echo "::error::DEPLOY_SSH_KEY appears to contain literal \\n characters. Paste with real line breaks."
+            exit 1
+          fi
+
+          if [ -n "${DEPLOY_SSH_PASSPHRASE:-}" ]; then
+            if ! ssh-keygen -y -f "${key_file}" -P "${DEPLOY_SSH_PASSPHRASE}" >/dev/null 2>&1; then
+              echo "::error::Private key parse failed with DEPLOY_SSH_PASSPHRASE."
+              exit 1
+            fi
+          else
+            if ! ssh-keygen -y -f "${key_file}" >/dev/null 2>&1; then
+              echo "::error::Private key parse failed. If key is encrypted, set DEPLOY_SSH_PASSPHRASE."
+              exit 1
+            fi
+          fi
+
+          rm -f "${key_file}"
+
       - name: Check SSH reachability from runner
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
