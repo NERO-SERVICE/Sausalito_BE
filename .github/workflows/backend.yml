@@ -205,8 +205,9 @@ jobs:
             : "${GHCR_READ_TOKEN:?GHCR_READ_TOKEN is empty}"
             : "${GHCR_DEPLOY_USERNAME:?GHCR_DEPLOY_USERNAME is empty}"
 
+            run_step 60 git_sync git pull --ff-only origin main
             run_step 30 docker_info docker info
             run_step 60 docker_login bash -lc 'echo "${GHCR_READ_TOKEN}" | docker login ghcr.io -u "${GHCR_DEPLOY_USERNAME}" --password-stdin'
             run_step 600 docker_pull docker pull "${BACKEND_IMAGE}:${IMAGE_TAG}"
             run_step 900 deploy_script ./scripts/deploy_backend.sh
-            run_step 180 storage_smoke ./scripts/check_object_storage.sh
+            run_step 180 storage_smoke bash ./scripts/check_object_storage.sh
