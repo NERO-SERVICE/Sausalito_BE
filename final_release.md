@@ -154,6 +154,18 @@ Compose 영속 볼륨:
 - `GHCR_TOKEN` (read:packages, write:packages)
 - `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `DEPLOY_PATH`
 
+권장 GitHub Secrets(키 교체 시 VM 수동작업 최소화):
+- `DEPLOY_SSH_AUTO_SYNC=true`
+- `DEPLOY_SSH_PUBLIC_KEY`
+- `GCP_PROJECT_ID`
+- `GCP_ZONE`
+- `GCP_INSTANCE_NAME`
+- `GCP_SERVICE_ACCOUNT_JSON`
+
+주의:
+- 위 자동 동기화는 GCP instance metadata `ssh-keys` 방식이다.
+- OS Login(`enable-oslogin=true`)이 켜져 있으면 metadata 키가 무시되므로 동작하지 않는다.
+
 ---
 
 ## 6) 배포 표준 명령

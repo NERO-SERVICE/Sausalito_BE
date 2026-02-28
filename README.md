@@ -89,6 +89,7 @@ docker compose ps
 curl -I https://sansakorea.com/healthz
 ```
 - GitHub Secrets 최소 목록: `docs/GITHUB_ACTIONS_SECRETS.md`
+- 배포 키 자동 동기화(권장): `DEPLOY_SSH_AUTO_SYNC=true` + GCP 관련 시크릿 구성 (상세는 문서 참고)
 
 ## Docker Cleanup (safe)
 ```bash

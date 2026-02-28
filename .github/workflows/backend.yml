@@ -123,6 +123,13 @@ jobs:
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           DEPLOY_SSH_KEY_RAW: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_PUBLIC_KEY: ${{ secrets.DEPLOY_SSH_PUBLIC_KEY }}
+          DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
+          DEPLOY_SSH_AUTO_SYNC: ${{ secrets.DEPLOY_SSH_AUTO_SYNC }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_ZONE: ${{ secrets.GCP_ZONE }}
+          GCP_INSTANCE_NAME: ${{ secrets.GCP_INSTANCE_NAME }}
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           set -euo pipefail
@@ -132,10 +139,115 @@ jobs:
           : "${DEPLOY_PATH:?DEPLOY_PATH is required}"
           : "${GHCR_TOKEN:?GHCR_TOKEN is required}"
           : "${DEPLOY_SSH_KEY_RAW:?DEPLOY_SSH_KEY is required}"
+
           if ! grep -q "BEGIN .*PRIVATE KEY" <<<"${DEPLOY_SSH_KEY_RAW}"; then
             echo "::error::DEPLOY_SSH_KEY must be a private key (BEGIN ... PRIVATE KEY)."
             exit 1
           fi
+
+          key_file="$(mktemp)"
+          trap 'rm -f "${key_file}"' EXIT
+          printf '%s\n' "${DEPLOY_SSH_KEY_RAW}" | sed 's/\r$//' > "${key_file}"
+          chmod 600 "${key_file}"
+
+          if grep -q '\\n' "${key_file}"; then
+            echo "::error::DEPLOY_SSH_KEY contains literal \\n. Paste the raw multi-line private key."
+            exit 1
+          fi
+
+          if [ -n "${DEPLOY_SSH_PASSPHRASE:-}" ]; then
+            if ! ssh-keygen -y -f "${key_file}" -P "${DEPLOY_SSH_PASSPHRASE}" >/dev/null 2>&1; then
+              echo "::error::DEPLOY_SSH_KEY parse failed with DEPLOY_SSH_PASSPHRASE."
+              exit 1
+            fi
+            echo "::notice::Key parse OK (passphrase-protected). SSH dry-run skipped."
+          else
+            if ! ssh-keygen -y -f "${key_file}" >/dev/null 2>&1; then
+              echo "::error::DEPLOY_SSH_KEY parse failed. If key is encrypted, set DEPLOY_SSH_PASSPHRASE."
+              exit 1
+            fi
+            if [ "${DEPLOY_SSH_AUTO_SYNC:-false}" != "true" ]; then
+              timeout 15 ssh -i "${key_file}" \
+                -o BatchMode=yes \
+                -o StrictHostKeyChecking=accept-new \
+                -o ConnectTimeout=10 \
+                -p "${DEPLOY_PORT}" \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                "echo ssh_auth_ok" >/dev/null
+            fi
+          fi
+
+          if [ "${DEPLOY_SSH_AUTO_SYNC:-false}" = "true" ]; then
+            : "${DEPLOY_SSH_PUBLIC_KEY:?DEPLOY_SSH_PUBLIC_KEY is required when DEPLOY_SSH_AUTO_SYNC=true}"
+            : "${GCP_PROJECT_ID:?GCP_PROJECT_ID is required when DEPLOY_SSH_AUTO_SYNC=true}"
+            : "${GCP_ZONE:?GCP_ZONE is required when DEPLOY_SSH_AUTO_SYNC=true}"
+            : "${GCP_INSTANCE_NAME:?GCP_INSTANCE_NAME is required when DEPLOY_SSH_AUTO_SYNC=true}"
+            : "${GCP_SERVICE_ACCOUNT_JSON:?GCP_SERVICE_ACCOUNT_JSON is required when DEPLOY_SSH_AUTO_SYNC=true}"
+            if ! grep -Eq '^ssh-(ed25519|rsa) [A-Za-z0-9+/=]+' <<<"${DEPLOY_SSH_PUBLIC_KEY}"; then
+              echo "::error::DEPLOY_SSH_PUBLIC_KEY format is invalid."
+              exit 1
+            fi
+          fi
+
+      - name: Auth to GCP (SSH key sync)
+        if: ${{ secrets.DEPLOY_SSH_AUTO_SYNC == 'true' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+
+      - name: Setup gcloud (SSH key sync)
+        if: ${{ secrets.DEPLOY_SSH_AUTO_SYNC == 'true' }}
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Sync deploy public key to VM metadata
+        if: ${{ secrets.DEPLOY_SSH_AUTO_SYNC == 'true' }}
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_PUBLIC_KEY: ${{ secrets.DEPLOY_SSH_PUBLIC_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_ZONE: ${{ secrets.GCP_ZONE }}
+          GCP_INSTANCE_NAME: ${{ secrets.GCP_INSTANCE_NAME }}
+        run: |
+          set -euo pipefail
+          instance_oslogin="$(
+            gcloud compute instances describe "${GCP_INSTANCE_NAME}" \
+              --project "${GCP_PROJECT_ID}" \
+              --zone "${GCP_ZONE}" \
+              --format='get(metadata.items.enable-oslogin)' || true
+          )"
+          project_oslogin="$(
+            gcloud compute project-info describe \
+              --project "${GCP_PROJECT_ID}" \
+              --format='get(commonInstanceMetadata.items.enable-oslogin)' || true
+          )"
+          if [ "${instance_oslogin}" = "TRUE" ] || [ "${instance_oslogin}" = "true" ] || [ "${project_oslogin}" = "TRUE" ] || [ "${project_oslogin}" = "true" ]; then
+            echo "::error::OS Login is enabled. Instance metadata ssh-keys sync is ignored. Disable OS Login or switch to OS Login based deploy."
+            exit 1
+          fi
+
+          current_keys="$(
+            gcloud compute instances describe "${GCP_INSTANCE_NAME}" \
+              --project "${GCP_PROJECT_ID}" \
+              --zone "${GCP_ZONE}" \
+              --format='get(metadata.items.ssh-keys)' || true
+          )"
+
+          tmp_keys="$(mktemp)"
+          trap 'rm -f "${tmp_keys}"' EXIT
+          if [ -n "${current_keys}" ]; then
+            printf '%s\n' "${current_keys}" > "${tmp_keys}"
+          fi
+          sed -i '/^[[:space:]]*$/d' "${tmp_keys}" || true
+
+          key_line="${DEPLOY_USER}:${DEPLOY_SSH_PUBLIC_KEY}"
+          if ! grep -Fqx "${key_line}" "${tmp_keys}" 2>/dev/null; then
+            printf '%s\n' "${key_line}" >> "${tmp_keys}"
+          fi
+
+          gcloud compute instances add-metadata "${GCP_INSTANCE_NAME}" \
+            --project "${GCP_PROJECT_ID}" \
+            --zone "${GCP_ZONE}" \
+            --metadata-from-file "ssh-keys=${tmp_keys}"
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
