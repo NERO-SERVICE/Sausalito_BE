@@ -40,11 +40,35 @@ class Command(BaseCommand):
             default_storage.delete(saved_name)
             exists_after_delete = default_storage.exists(saved_name)
         except Exception as exc:
+            error_detail = str(exc)
+            operation = str(getattr(exc, "operation_name", ""))
+            error_code = ""
+            error_message = ""
+            try:
+                response = getattr(exc, "response", None) or {}
+                metadata = response.get("ResponseMetadata", {})
+                if not operation:
+                    operation = str(metadata.get("RequestId", ""))
+                error = response.get("Error", {})
+                error_code = str(error.get("Code", ""))
+                error_message = str(error.get("Message", ""))
+            except Exception:
+                pass
+
+            hint = (
+                "Verify that AWS_ACCESS_KEY_ID maps to the intended service account, "
+                "HMAC key state is ACTIVE, and the service account has "
+                "Storage Object Admin on the target bucket (without restrictive IAM conditions)."
+            )
             raise CommandError(
                 "Object storage smoke test failed. "
                 "Check AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, bucket permission, "
                 "and GCS HMAC key status.\n"
-                f"Original error: {exc}"
+                f"Error code: {error_code or '(unknown)'}\n"
+                f"Error message: {error_message or '(none)'}\n"
+                f"Operation hint: {operation or '(unknown)'}\n"
+                f"Original error: {error_detail}\n"
+                f"Hint: {hint}"
             ) from exc
 
         if not exists_after_write:
@@ -53,4 +77,3 @@ class Command(BaseCommand):
             raise CommandError("Object delete appears to have failed (object still exists).")
 
         self.stdout.write(self.style.SUCCESS("[storage-check] OK"))
-
