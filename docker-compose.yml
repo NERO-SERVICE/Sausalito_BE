@@ -8,9 +8,6 @@ x-default-logging: &default-logging
 
 x-django-service: &django-service
   image: ${BACKEND_IMAGE:-ghcr.io/nero-service/sausalito-be}:${IMAGE_TAG:-latest}
-  build:
-    context: .
-    dockerfile: Dockerfile
   env_file:
     - ./.env.prod
   environment:
@@ -19,9 +16,10 @@ x-django-service: &django-service
     DJANGO_COLLECTSTATIC_ON_START: "false"
     WAIT_FOR_DB: "true"
     WAIT_FOR_REDIS: "true"
+    AWS_REQUEST_CHECKSUM_CALCULATION: ${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}
+    AWS_RESPONSE_CHECKSUM_VALIDATION: ${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}
   volumes:
     - django_static:/app/staticfiles
-    - django_media:/app/media
   depends_on:
     db:
       condition: service_healthy
@@ -104,7 +102,6 @@ services:
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - django_static:/var/www/static:ro
-      - django_media:/var/www/media:ro
       - certbot_etc:/etc/letsencrypt
       - certbot_webroot:/var/www/certbot
     restart: unless-stopped
@@ -132,6 +129,5 @@ services:
 volumes:
   postgres_data:
   django_static:
-  django_media:
   certbot_etc:
   certbot_webroot:

@@ -58,7 +58,8 @@ class Command(BaseCommand):
             hint = (
                 "Verify that AWS_ACCESS_KEY_ID maps to the intended service account, "
                 "HMAC key state is ACTIVE, and the service account has "
-                "Storage Object Admin on the target bucket (without restrictive IAM conditions)."
+                "Storage Object Admin on the target bucket (without restrictive IAM conditions). "
+                "If this started recently, rotate the HMAC key pair and rebuild image to apply pinned boto3/botocore versions."
             )
             raise CommandError(
                 "Object storage smoke test failed. "

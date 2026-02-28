@@ -70,9 +70,38 @@ RUN_OBJECT_STORAGE_SMOKE_TEST=true ./scripts/predeploy_check.sh
 ./scripts/check_object_storage.sh
 ```
 
+## Clean CI/CD Flow (sausalito_be only)
+1. Local verify
+```bash
+./scripts/predeploy_check.sh
+docker compose config >/tmp/sausalito.compose.yaml
+```
+2. Push to main (GitHub Actions: test -> build/push -> deploy)
+```bash
+git add .
+git commit -m "deploy: update backend"
+git push origin main
+```
+3. VM post-check
+```bash
+cd /opt/sausalito_be
+docker compose ps
+curl -I https://sansakorea.com/healthz
+```
+- GitHub Secrets 최소 목록: `docs/GITHUB_ACTIONS_SECRETS.md`
+
+## Docker Cleanup (safe)
+```bash
+./scripts/maintenance/cleanup_docker.sh
+```
+- `docker volume prune`는 DB 데이터 손실 위험이 있으므로 자동 실행하지 않습니다.
+
 ## Environment Files
 - 로컬 개발: `.env.local.example` -> `.env` 복사 후 값 수정
 - 운영 배포: `.env.prod.example` -> `.env.prod` 복사 후 값 수정
+- GCS S3 호환 사용 시 `AWS_S3_REGION_NAME=auto` 권장
+- GCS S3 호환 서명 안정화를 위해 `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`, `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` 권장
+- GCS S3 호환에서 `SignatureDoesNotMatch(Invalid argument)`가 반복되면 이미지를 재빌드하여 `requirements/prod.txt`의 boto3/botocore 고정 버전을 반영하세요.
 
 
 ## Notes

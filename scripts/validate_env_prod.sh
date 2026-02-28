@@ -143,6 +143,13 @@ if [ "$(lower "$(get_value USE_S3_MEDIA)")" != "true" ]; then
   exit 1
 fi
 
+aws_s3_endpoint_url="$(get_value AWS_S3_ENDPOINT_URL || true)"
+aws_s3_region_name="$(get_value AWS_S3_REGION_NAME || true)"
+if [ "${aws_s3_endpoint_url}" = "https://storage.googleapis.com" ] && [ -z "${aws_s3_region_name}" ]; then
+  echo "[env-check][WARN] AWS_S3_REGION_NAME is empty while using GCS S3 endpoint."
+  echo "[env-check][WARN] Recommend setting AWS_S3_REGION_NAME=auto to avoid signature mismatch."
+fi
+
 if [[ "$(get_value PUBLIC_BACKEND_ORIGIN)" != https://* ]]; then
   echo "[env-check][ERROR] PUBLIC_BACKEND_ORIGIN must start with https://"
   exit 1

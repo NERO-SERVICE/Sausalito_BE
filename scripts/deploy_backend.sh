@@ -14,7 +14,7 @@ compose() {
 }
 
 health_check() {
-  local retries=20
+  local retries=30
   local wait_seconds=3
   local i
   local status_code
@@ -51,17 +51,8 @@ compose run --rm --no-deps app_blue python manage.py migrate --noinput
 echo "[deploy] Collect static files"
 compose run --rm --no-deps app_blue python manage.py collectstatic --noinput
 
-echo "[deploy] Ensure nginx and both app pools are running"
+echo "[deploy] Start app pools and nginx"
 compose up -d --no-build nginx app_blue app_green
-health_check
-
-echo "[deploy] Rolling update app_blue"
-compose up -d --no-build --no-deps app_blue
-compose exec -T nginx nginx -s reload
-health_check
-
-echo "[deploy] Rolling update app_green"
-compose up -d --no-build --no-deps app_green
 compose exec -T nginx nginx -s reload
 health_check
 

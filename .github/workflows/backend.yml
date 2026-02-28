@@ -74,6 +74,7 @@ jobs:
           bash -n scripts/ssl/renew_letsencrypt.sh
           bash -n scripts/ssl/enable_https_conf.sh
           bash -n scripts/maintenance/prune_docker.sh
+          bash -n scripts/maintenance/cleanup_docker.sh
           bash -n scripts/maintenance/disk_guard.sh
           bash -n scripts/maintenance/backup_postgres_to_object_storage.sh
 
@@ -90,7 +91,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ env.GHCR_DEPLOY_USERNAME }}
-          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN }}
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -113,55 +114,26 @@ jobs:
     needs: build-and-push
     environment: production
     steps:
-      - name: Validate SSH secret format
-        env:
-          DEPLOY_SSH_KEY_RAW: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_SSH_PASSPHRASE: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
-        run: |
-          set -euo pipefail
-          : "${DEPLOY_SSH_KEY_RAW:?DEPLOY_SSH_KEY is required}"
-
-          key_file="$(mktemp)"
-          printf '%s\n' "${DEPLOY_SSH_KEY_RAW}" | sed 's/\r$//' > "${key_file}"
-          chmod 600 "${key_file}"
-
-          if ! grep -Eq '^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----$' "${key_file}"; then
-            echo "::error::DEPLOY_SSH_KEY is not a private key. Paste full private key with BEGIN/END lines."
-            exit 1
-          fi
-
-          if grep -q '\\n' "${key_file}"; then
-            echo "::error::DEPLOY_SSH_KEY appears to contain literal \\n characters. Paste with real line breaks."
-            exit 1
-          fi
-
-          if [ -n "${DEPLOY_SSH_PASSPHRASE:-}" ]; then
-            if ! ssh-keygen -y -f "${key_file}" -P "${DEPLOY_SSH_PASSPHRASE}" >/dev/null 2>&1; then
-              echo "::error::Private key parse failed with DEPLOY_SSH_PASSPHRASE."
-              exit 1
-            fi
-          else
-            if ! ssh-keygen -y -f "${key_file}" >/dev/null 2>&1; then
-              echo "::error::Private key parse failed. If key is encrypted, set DEPLOY_SSH_PASSPHRASE."
-              exit 1
-            fi
-          fi
-
-          rm -f "${key_file}"
-
-      - name: Check SSH reachability from runner
+      - name: Validate required deploy secrets
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY_RAW: ${{ secrets.DEPLOY_SSH_KEY }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         run: |
           set -euo pipefail
           : "${DEPLOY_HOST:?DEPLOY_HOST is required}"
+          : "${DEPLOY_USER:?DEPLOY_USER is required}"
           : "${DEPLOY_PORT:?DEPLOY_PORT is required}"
-          echo "Resolving ${DEPLOY_HOST}"
-          getent hosts "${DEPLOY_HOST}" || true
-          echo "Checking TCP ${DEPLOY_HOST}:${DEPLOY_PORT}"
-          timeout 10 bash -c "cat < /dev/null > /dev/tcp/${DEPLOY_HOST}/${DEPLOY_PORT}"
-          echo "TCP connectivity OK"
+          : "${DEPLOY_PATH:?DEPLOY_PATH is required}"
+          : "${GHCR_READ_TOKEN:?GHCR_READ_TOKEN is required}"
+          : "${DEPLOY_SSH_KEY_RAW:?DEPLOY_SSH_KEY is required}"
+          if ! grep -q "BEGIN .*PRIVATE KEY" <<<"${DEPLOY_SSH_KEY_RAW}"; then
+            echo "::error::DEPLOY_SSH_KEY must be a private key (BEGIN ... PRIVATE KEY)."
+            exit 1
+          fi
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
@@ -171,43 +143,16 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           passphrase: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
           port: ${{ secrets.DEPLOY_PORT }}
-          timeout: 20s
+          timeout: 30s
           command_timeout: 20m
           script_stop: true
-          debug: true
           script: |
             set -euo pipefail
-            ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
-            run_step() {
-              local timeout_seconds="$1"
-              local name="$2"
-              shift 2
-              echo "[deploy][$(ts)] START ${name} (timeout=${timeout_seconds}s)"
-              if timeout "${timeout_seconds}" "$@"; then
-                echo "[deploy][$(ts)] DONE  ${name}"
-              else
-                local code="$?"
-                if [ "${code}" -eq 124 ]; then
-                  echo "[deploy][$(ts)] ERROR ${name} timed out after ${timeout_seconds}s"
-                else
-                  echo "[deploy][$(ts)] ERROR ${name} failed with code ${code}"
-                fi
-                exit "${code}"
-              fi
-            }
-
-            echo "[deploy][$(ts)] host=$(hostname)"
             cd ${{ secrets.DEPLOY_PATH }}
             export GHCR_READ_TOKEN="${{ secrets.GHCR_READ_TOKEN }}"
             export GHCR_DEPLOY_USERNAME="${{ env.GHCR_DEPLOY_USERNAME }}"
             export BACKEND_IMAGE=${{ env.IMAGE_NAME }}
             export IMAGE_TAG=${{ github.sha }}
-            : "${GHCR_READ_TOKEN:?GHCR_READ_TOKEN is empty}"
-            : "${GHCR_DEPLOY_USERNAME:?GHCR_DEPLOY_USERNAME is empty}"
-
-            run_step 60 git_sync git pull --ff-only origin main
-            run_step 30 docker_info docker info
-            run_step 60 docker_login bash -lc 'echo "${GHCR_READ_TOKEN}" | docker login ghcr.io -u "${GHCR_DEPLOY_USERNAME}" --password-stdin'
-            run_step 600 docker_pull docker pull "${BACKEND_IMAGE}:${IMAGE_TAG}"
-            run_step 900 deploy_script ./scripts/deploy_backend.sh
-            run_step 180 storage_smoke bash ./scripts/check_object_storage.sh
+            git pull --ff-only origin main
+            echo "${GHCR_READ_TOKEN}" | docker login ghcr.io -u "${GHCR_DEPLOY_USERNAME}" --password-stdin
+            ./scripts/deploy_backend.sh
