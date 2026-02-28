@@ -189,6 +189,16 @@ jobs:
               echo "::error::DEPLOY_SSH_PUBLIC_KEY format is invalid."
               exit 1
             fi
+            if [ -n "${DEPLOY_SSH_PASSPHRASE:-}" ]; then
+              derived_pub="$(ssh-keygen -y -f "${key_file}" -P "${DEPLOY_SSH_PASSPHRASE}" | awk '{print $1\" \"$2}')"
+            else
+              derived_pub="$(ssh-keygen -y -f "${key_file}" | awk '{print $1\" \"$2}')"
+            fi
+            provided_pub="$(printf '%s\n' "${DEPLOY_SSH_PUBLIC_KEY}" | awk '{print $1\" \"$2}')"
+            if [ "${derived_pub}" != "${provided_pub}" ]; then
+              echo "::error::DEPLOY_SSH_PUBLIC_KEY does not match DEPLOY_SSH_KEY."
+              exit 1
+            fi
           fi
 
       - name: Auth to GCP (SSH key sync)
@@ -227,28 +237,15 @@ jobs:
             exit 1
           fi
 
-          current_keys="$(
-            gcloud compute instances describe "${GCP_INSTANCE_NAME}" \
-              --project "${GCP_PROJECT_ID}" \
-              --zone "${GCP_ZONE}" \
-              --format='get(metadata.items.ssh-keys)' || true
-          )"
-
           tmp_keys="$(mktemp)"
           trap 'rm -f "${tmp_keys}"' EXIT
-          if [ -n "${current_keys}" ]; then
-            printf '%s\n' "${current_keys}" > "${tmp_keys}"
-          fi
-          sed -i '/^[[:space:]]*$/d' "${tmp_keys}" || true
-
-          key_line="${DEPLOY_USER}:${DEPLOY_SSH_PUBLIC_KEY}"
-          if ! grep -Fqx "${key_line}" "${tmp_keys}" 2>/dev/null; then
-            printf '%s\n' "${key_line}" >> "${tmp_keys}"
-          fi
+          # Replace instance-level SSH keys with deploy key only.
+          printf '%s:%s\n' "${DEPLOY_USER}" "${DEPLOY_SSH_PUBLIC_KEY}" > "${tmp_keys}"
 
           gcloud compute instances add-metadata "${GCP_INSTANCE_NAME}" \
             --project "${GCP_PROJECT_ID}" \
             --zone "${GCP_ZONE}" \
+            --metadata "block-project-ssh-keys=TRUE" \
             --metadata-from-file "ssh-keys=${tmp_keys}"
 
       - name: Deploy via SSH
