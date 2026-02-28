@@ -92,9 +92,17 @@ curl -I https://sansakorea.com/healthz
 
 ## Docker Cleanup (safe)
 ```bash
-./scripts/maintenance/cleanup_docker.sh
+PRUNE_UNTIL=168h ./scripts/maintenance/prune_docker.sh
 ```
 - `docker volume prune`는 DB 데이터 손실 위험이 있으므로 자동 실행하지 않습니다.
+- 운영 기준 문서: `docs/DOCKER_OPERATION.md`
+
+## Runtime Automation (recommended on VM)
+```bash
+cd /opt/sausalito_be
+sudo ./scripts/systemd/install_runtime_automation.sh
+```
+- certbot 자동 갱신, 디스크 가드, 런타임 헬스 가드, 백업 가드 타이머를 한 번에 설치합니다.
 
 ## Environment Files
 - 로컬 개발: `.env.local.example` -> `.env` 복사 후 값 수정

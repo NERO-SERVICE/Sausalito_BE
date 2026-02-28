@@ -1,0 +1,11 @@
+[Unit]
+Description=Sausalito postgres backup guard (object storage)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sausalito_be
+ExecStart=/opt/sausalito_be/scripts/maintenance/backup_guard.sh
+StandardOutput=journal
+StandardError=journal

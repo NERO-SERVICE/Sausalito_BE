@@ -1,308 +1,264 @@
-# sausalito_be Final Release Protocol (Single-Repo Standard)
+# sausalito_be Final Release Guide
 
-이 문서는 `sausalito_be` 저장소만 기준으로 배포를 수행하는 최종 가이드다.
+이 문서는 `sausalito_be` 저장소 기준 최종 배포/운영 문서다.
+모든 Docker/CI-CD/운영 명령은 `sausalito_be` 루트 기준이다.
 
-원칙:
-- 모든 CI/CD, Docker 이미지 빌드/배포, 서버 배포 스크립트 실행은 `sausalito_be` 내부에서만 수행한다.
-- 상위 폴더(`sausalito_project`)는 로컬 작업 편의용이며 배포/운영 기준점이 아니다.
+## 0) e2-medium 무개입 운영 가능성 검토 결과
+
+판정: **조건부 YES**
+- 현재 구조는 특별 이슈가 없으면 장기간 자동 운영 가능하도록 설계되어 있다.
+- 단, 완전 무개입(never touch)은 불가능하다. 클라우드/도메인/보안/비용/용량은 주기적 확인이 필요하다.
+
+자동화로 커버되는 범위:
+- 코드 배포: GitHub Actions 자동 빌드/배포
+- 컨테이너 재기동: `restart: unless-stopped`
+- HTTPS 갱신 + Nginx reload: certbot timer
+- 디스크 압박 시 prune: disk guard timer
+- 런타임 장애 자동 복구 시도: runtime guard timer
+- DB 백업(설정 시): backup timer + backup guard
+
+수동 확인이 필요한 범위(경고):
+- GCP 과금/쿼터/정책 변경
+- 도메인 갱신/네임서버 상태
+- Secret/PAT 만료 및 회전
+- 백업 복구 리허설(백업 성공 != 복구 가능)
+- 급격한 트래픽 증가 시 인프라 스케일링
 
 ---
 
-## 0) 기준 파일 위치 (모두 `sausalito_be` 내부)
+## 1) 아키텍처 요약
+- App: Django + Gunicorn
+- Proxy: Nginx
+- DB: Postgres (컨테이너)
+- Cache/Session: Redis (컨테이너)
+- Media: Object Storage(GCS S3 호환)
+- Deploy: GitHub Actions -> GHCR -> VM SSH 배포
+- 무중단 배포: `app_blue`, `app_green` 동시 운영
 
-- Compose: `docker-compose.yml`
-- 배포 스크립트: `scripts/deploy_backend.sh`
-- HTTPS 스크립트: `scripts/ssl/*.sh`
-- 유지보수 스크립트: `scripts/maintenance/*.sh`
-- systemd 템플릿: `scripts/systemd/*`
-- CI/CD: `.github/workflows/backend.yml`, `.github/workflows/security.yml`
-- 환경변수 예시: `.env.prod.example`
+핵심 원칙:
+- 사용자 미디어는 VM 디스크에 저장하지 않음
+- 로그는 파일 적재 대신 stdout/stderr
+- Docker 로그 로테이션/주기적 정리 적용
 
 ---
 
-## 1) 로컬 최종 점검 (배포 전)
+## 2) 컨테이너 역할
 
-로컬에서 `sausalito_be` 루트로 이동 후 실행:
+### `db`
+- PostgreSQL 운영 DB
+- 영속 볼륨: `postgres_data`
+- 외부 포트 미노출
 
+### `redis`
+- 캐시/세션 저장소
+- 메모리 정책 기반 운영
+- 외부 포트 미노출
+
+### `app_blue`, `app_green`
+- Django 앱 풀 2개
+- 롤링 교체를 위한 무중단 배포 단위
+
+### `nginx`
+- 80/443 종단
+- health 체크 라우팅
+- 80 -> 443 리다이렉트
+
+### `certbot`
+- 인증서 발급/갱신 전용(필요 시 실행)
+
+---
+
+## 3) Docker 저장 구조
+
+원격 레지스트리:
+- `ghcr.io/nero-service/sausalito-be:{latest|sha}`
+
+VM 로컬:
+- Docker root: `/var/lib/docker`
+- 레이어: `/var/lib/docker/overlay2`
+- 볼륨: `/var/lib/docker/volumes`
+
+Compose 영속 볼륨:
+- `postgres_data`
+- `django_static`
+- `certbot_etc`
+- `certbot_webroot`
+
+미디어:
+- `USE_S3_MEDIA=true` 운영 시 Object Storage 저장
+- 미디어 원본은 VM 디스크에 누적되지 않음
+
+---
+
+## 4) 파일/폴더 구조 핵심
+
+### 인프라/배포
+- `docker-compose.yml`: 운영 오케스트레이션
+- `Dockerfile`: 앱 이미지 빌드
+- `.github/workflows/backend.yml`: CI/CD
+- `.github/workflows/security.yml`: 시크릿 패턴 스캔
+
+### 설정
+- `config/settings/base.py`: 공통
+- `config/settings/prod.py`: 운영 보안 강제
+- `.env.prod.example`: 운영 env 템플릿
+
+### Nginx/SSL
+- `nginx/conf.d/00-http.conf`
+- `nginx/conf.d/10-https.conf.template`
+- `scripts/ssl/bootstrap_letsencrypt.sh`
+- `scripts/ssl/renew_letsencrypt.sh`
+- `scripts/ssl/enable_https_conf.sh`
+
+### 운영 스크립트
+- `scripts/deploy_backend.sh`
+- `scripts/predeploy_check.sh`
+- `scripts/check_object_storage.sh`
+- `scripts/validate_env_prod.sh`
+
+### 유지보수
+- `scripts/maintenance/prune_docker.sh`
+- `scripts/maintenance/disk_guard.sh`
+- `scripts/maintenance/runtime_guard.sh`
+- `scripts/maintenance/backup_guard.sh`
+- `scripts/maintenance/backup_postgres_to_object_storage.sh`
+
+### systemd 자동화
+- `scripts/systemd/install_runtime_automation.sh`
+- `scripts/systemd/sausalito-certbot-renew.*`
+- `scripts/systemd/sausalito-disk-guard.*`
+- `scripts/systemd/sausalito-runtime-guard.*`
+- `scripts/systemd/sausalito-backup.*`
+
+---
+
+## 5) CI/CD 표준 흐름
+
+`main` push 시:
+1. test
+- 시크릿 패턴 검사
+- Django 테스트
+- compose/env/script 정합성 검사
+
+2. build-and-push
+- GHCR 로그인(`GHCR_TOKEN`)
+- 이미지 빌드 후 `${GITHUB_SHA}`, `latest` 푸시
+
+3. deploy
+- VM SSH 접속
+- `git pull --ff-only`
+- GHCR 로그인
+- `./scripts/deploy_backend.sh`
+
+필수 GitHub Secrets:
+- `GHCR_TOKEN` (read:packages, write:packages)
+- `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `DEPLOY_PATH`
+
+---
+
+## 6) 배포 표준 명령
+
+로컬 사전 점검:
 ```bash
 cd /Users/hoyeon/workspace/sausalito_project/sausalito_be
-
-# 민감정보 점검
-./scripts/check_sensitive.sh
-
-# 운영 env 점검
-./scripts/validate_env_prod.sh --file .env.prod
-
-# 테스트
-./venv/bin/python manage.py test --verbosity 2 --settings=config.settings.local
-
-# compose 정합성 확인
-docker compose config > /tmp/docker-compose.validated.yaml
-
-# 원샷 사전 점검
 ./scripts/predeploy_check.sh
 ```
 
----
-
-## 2) GCP 콘솔 생성 순서 (클릭 경로)
-
-### 2-1. 프로젝트/결제
-1. GCP Console 접속
-2. 프로젝트 선택기 -> `NEW PROJECT`
-3. 프로젝트 생성
-4. `Billing` 연결
-
-### 2-2. API 활성화
-1. `APIs & Services` -> `Enabled APIs & services`
-2. `+ ENABLE APIS AND SERVICES`
-3. `Compute Engine API` 활성화
-
-### 2-3. VM 생성 (무료 범위 우선)
-1. `Compute Engine` -> `VM instances` -> `CREATE INSTANCE`
-2. 권장 입력
-   - Machine type: `e2-micro`
-   - Region: Always Free 대상 (`us-west1`, `us-central1`, `us-east1`)
-   - Boot disk: Ubuntu 22.04 LTS, Standard PD
-3. `Allow HTTP traffic`, `Allow HTTPS traffic` 체크
-4. `CREATE`
-
-주의(2026-02-24 기준):
-- Compute Engine Always Free는 리전/자원 제한이 있다.
-- Cloud SQL/Memorystore는 Always Free 대상이 아니다.
-- 과금 방지를 위해 이 설계는 VM 내 Docker Postgres/Redis를 사용한다.
-
-공식 문서:
-- https://cloud.google.com/free/docs/free-cloud-features
-- https://cloud.google.com/sql/pricing
-- https://cloud.google.com/appengine/docs/standard/services/memorystore
-
----
-
-## 3) DNS 연결
-
-도메인 구매처 DNS에서:
-1. `A` 레코드 생성
-2. Host: `@` 와 `www` 둘 다 생성
-3. Value: GCP VM External IP
-
-검증:
-
+배포 트리거:
 ```bash
-nslookup sansakorea.com
+git add .
+git commit -m "deploy: update backend"
+git push origin main
 ```
 
----
-
-## 4) 서버 초기 세팅 (SSH 접속 후)
-
-```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg lsb-release git
-
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
-newgrp docker
-
-docker --version
-docker compose version
-```
-
-배포 디렉토리 생성/클론:
-
-```bash
-sudo mkdir -p /opt/sausalito_be
-sudo chown -R $USER:$USER /opt/sausalito_be
-cd /opt/sausalito_be
-
-git clone https://github.com/NERO-SERVICE/Sausalito_BE.git .
-```
-
----
-
-## 5) 프로덕션 환경변수 작성
-
+VM 수동 배포(필요 시):
 ```bash
 cd /opt/sausalito_be
-cp .env.prod.example .env.prod
-nano .env.prod
+docker login ghcr.io -u pump9918
+export BACKEND_IMAGE=ghcr.io/nero-service/sausalito-be
+export IMAGE_TAG=latest
+./scripts/deploy_backend.sh
 ```
 
-필수 항목:
-- Django
-  - `DJANGO_SECRET_KEY`
-  - `DJANGO_ALLOWED_HOSTS=sansakorea.com,www.sansakorea.com`
-  - `PUBLIC_BACKEND_ORIGIN=https://sansakorea.com`
-- DB
-  - `DB_HOST=db`, `DB_PORT=5432`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
-  - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
-- Redis
-  - `USE_REDIS_CACHE=true`
-  - `REDIS_CACHE_URL=redis://redis:6379/1`
-  - `REDIS_SESSION_URL=redis://redis:6379/2`
-- CORS/CSRF
-  - `CORS_ALLOWED_ORIGINS=https://sausalito.co.kr,https://www.sausalito.co.kr`
-  - `CSRF_TRUSTED_ORIGINS=https://sausalito.co.kr,https://www.sausalito.co.kr,https://sansakorea.com,https://www.sansakorea.com`
-- Object Storage(Media)
-  - `USE_S3_MEDIA=true`
-  - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`
-  - `AWS_S3_ENDPOINT_URL`, `AWS_QUERYSTRING_AUTH` 등
-- HTTPS
-  - `LETSENCRYPT_EMAIL`
-  - `LETSENCRYPT_DOMAINS=sansakorea.com,www.sansakorea.com`
-
----
-
-## 6) 최초 기동
-
-```bash
-cd /opt/sausalito_be
-
-docker compose pull
-docker compose up -d db redis
-docker compose run --rm --no-deps app_blue python manage.py migrate --noinput
-docker compose run --rm --no-deps app_blue python manage.py collectstatic --noinput
-docker compose up -d nginx app_blue app_green
-```
-
-검증:
-
+상태 확인:
 ```bash
 docker compose ps
-curl -f http://127.0.0.1/healthz
-docker compose exec -T redis redis-cli ping
-docker compose exec -T db sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-```
-
----
-
-## 7) HTTPS 적용 (Let's Encrypt)
-
-최초 발급:
-
-```bash
-cd /opt/sausalito_be
-./scripts/ssl/bootstrap_letsencrypt.sh
-```
-
-확인:
-
-```bash
-curl -I http://sansakorea.com/healthz
 curl -I https://sansakorea.com/healthz
+./scripts/check_object_storage.sh
 ```
-
-수동 갱신:
-
-```bash
-./scripts/ssl/renew_letsencrypt.sh
-```
-
-인증서 자동갱신 타이머 등록:
-
-```bash
-sudo cp scripts/systemd/sausalito-certbot-renew.service /etc/systemd/system/
-sudo cp scripts/systemd/sausalito-certbot-renew.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now sausalito-certbot-renew.timer
-```
-
-참고:
-- `renew_letsencrypt.sh`는 certbot 갱신 후 `nginx -s reload`까지 수행한다.
 
 ---
 
-## 8) GitHub Actions CI/CD 연결
+## 7) 자동화 설치 (권장)
 
-### 8-1. GitHub Secrets
-Repository -> `Settings` -> `Secrets and variables` -> `Actions`:
-
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `DEPLOY_SSH_KEY`
-- `DEPLOY_PORT` (예: `22`)
-- `DEPLOY_PATH` (`/opt/sausalito_be`)
-- `GHCR_TOKEN` (read:packages, write:packages)
-
-### 8-2. 파이프라인 동작
-- 워크플로 파일:
-  - `.github/workflows/backend.yml`
-  - `.github/workflows/security.yml`
-- `main` push 시: test -> build/push -> deploy
-
----
-
-## 9) 운영 배포/롤백 명령
-
-배포:
-
+VM에서 1회 실행:
 ```bash
 cd /opt/sausalito_be
-export BACKEND_IMAGE=ghcr.io/nero-service/sausalito-be
-export IMAGE_TAG=<sha_or_tag>
-./scripts/deploy_backend.sh
+sudo ./scripts/systemd/install_runtime_automation.sh
 ```
 
-롤백:
+활성화되는 타이머:
+- `sausalito-certbot-renew.timer` (인증서 자동 갱신)
+- `sausalito-disk-guard.timer` (디스크 임계치 기반 정리)
+- `sausalito-runtime-guard.timer` (헬스체크 + 자동 복구 시도)
+- `sausalito-backup.timer` (백업 가드; 설정 없으면 스킵)
 
+상태 확인:
 ```bash
-cd /opt/sausalito_be
-export BACKEND_IMAGE=ghcr.io/nero-service/sausalito-be
-export IMAGE_TAG=<previous_stable_tag>
-./scripts/deploy_backend.sh
+systemctl list-timers --all | grep sausalito-
 ```
 
 ---
 
-## 10) 운영 유지보수 (디스크/로그/백업)
+## 8) 경고사항 (반드시 수동 관리 필요)
 
-```bash
-cd /opt/sausalito_be
-./scripts/maintenance/disk_guard.sh
-./scripts/maintenance/prune_docker.sh
-./scripts/maintenance/backup_postgres_to_object_storage.sh
-```
+1. **백업 복구 검증**
+- 자동 백업만으로는 불충분
+- 월 1회 이상 복구 리허설 필요
 
-디스크 가드 타이머 등록:
+2. **보안 키 회전**
+- `GHCR_TOKEN`, S3/GCS 키, OAuth 키 유출/만료 대비 회전 필요
 
-```bash
-sudo cp scripts/systemd/sausalito-disk-guard.service /etc/systemd/system/
-sudo cp scripts/systemd/sausalito-disk-guard.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now sausalito-disk-guard.timer
-```
+3. **OS 보안 업데이트**
+- 컨테이너 외 호스트 취약점은 별도 패치 필요
 
----
+4. **도메인/DNS/인증서 체인 이슈**
+- DNS 오변경, 도메인 만료, CA 정책 변화는 자동으로 해결되지 않음
 
-## 11) 최종 체크리스트
+5. **트래픽 급증 한계**
+- e2-medium 단일 VM은 급격한 증가에 한계
+- DB/Redis가 동일 인스턴스에 있어 병목 가능
 
-- [ ] 모든 명령이 `sausalito_be` 루트에서 실행됨
-- [ ] `.env.prod` 작성 및 민감정보 Git 미추적 확인
-- [ ] Postgres/Redis 외부 포트 미노출 확인
-- [ ] `https://sansakorea.com/healthz` 정상 확인
-- [ ] Object Storage 기반 media(`USE_S3_MEDIA=true`) 확인
-- [ ] CI/CD secrets의 `DEPLOY_PATH=/opt/sausalito_be` 확인
-- [ ] certbot 갱신 + nginx reload 자동화 확인
+6. **비용/쿼터**
+- GCP 과금/쿼터/정책은 수동 모니터링 필요
 
 ---
 
-## 12) 실제 이미지 빌드/푸시 (NERO-SERVICE + pump9918)
+## 9) e2-medium 운영 한계와 확장 기준
 
-```bash
-cd /Users/hoyeon/workspace/sausalito_project/sausalito_be
-export BACKEND_IMAGE=ghcr.io/nero-service/sausalito-be
-export IMAGE_TAG=dev-$(date +%Y%m%d%H%M)
+현재 구조로 적합:
+- 초기~중간 트래픽
+- 운영 복잡도를 낮추고 빠르게 서비스할 때
 
-docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} .
-docker tag ${BACKEND_IMAGE}:${IMAGE_TAG} ${BACKEND_IMAGE}:latest
+확장 신호:
+- API p95 지연 상승
+- DB CPU/IO 포화
+- 배포/마이그레이션 시간 증가
+- 장애 복구 시간 증가
 
-# 수기 로그인 (PAT 입력)
-docker login ghcr.io -u pump9918
+다음 단계:
+- VM 스펙 상향 + 디스크 IOPS 증설
+- Cloud SQL/Memorystore 분리
+- 인스턴스 다중화 + Load Balancer
+- 모니터링/알람 고도화
 
-docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
-docker push ${BACKEND_IMAGE}:latest
-```
+---
 
-주의:
-- `docker login` 비밀번호 칸에는 GitHub 비밀번호가 아니라 PAT를 입력해야 한다.
-- 수동 배포 시 `IMAGE_TAG`를 위 태그로 지정해서 `./scripts/deploy_backend.sh`를 실행한다.
+## 10) 최종 체크리스트
+- [ ] `./scripts/predeploy_check.sh` 통과
+- [ ] Actions `test/build-and-push/deploy` 성공
+- [ ] `https://sansakorea.com/healthz` 200
+- [ ] `./scripts/check_object_storage.sh` 성공
+- [ ] 자동화 타이머 4종 활성화 확인
+- [ ] 백업 복구 리허설 일정 수립
+- [ ] 롤백용 안정 SHA 기록

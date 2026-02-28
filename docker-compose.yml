@@ -79,13 +79,11 @@ services:
 
   app_blue:
     <<: *django-service
-    container_name: sausalito_app_blue
     expose:
       - "8000"
 
   app_green:
     <<: *django-service
-    container_name: sausalito_app_green
     expose:
       - "8000"
 

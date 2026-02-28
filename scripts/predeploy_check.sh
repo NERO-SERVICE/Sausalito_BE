@@ -18,9 +18,11 @@ bash -n scripts/deploy_backend.sh
 bash -n scripts/ssl/bootstrap_letsencrypt.sh
 bash -n scripts/ssl/renew_letsencrypt.sh
 bash -n scripts/ssl/enable_https_conf.sh
+bash -n scripts/systemd/install_runtime_automation.sh
 bash -n scripts/maintenance/prune_docker.sh
-bash -n scripts/maintenance/cleanup_docker.sh
 bash -n scripts/maintenance/disk_guard.sh
+bash -n scripts/maintenance/runtime_guard.sh
+bash -n scripts/maintenance/backup_guard.sh
 bash -n scripts/maintenance/backup_postgres_to_object_storage.sh
 bash -n scripts/validate_env_prod.sh
 bash -n scripts/check_object_storage.sh

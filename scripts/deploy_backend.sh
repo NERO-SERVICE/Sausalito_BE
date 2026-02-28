@@ -33,7 +33,7 @@ health_check() {
 }
 
 echo "[deploy] Pull latest images (tag: ${IMAGE_TAG})"
-compose pull db redis app_blue app_green nginx
+compose pull app_blue app_green
 
 echo "[deploy] Verify backend image exists locally"
 if ! docker image inspect "${BACKEND_IMAGE:-ghcr.io/nero-service/sausalito-be}:${IMAGE_TAG}" >/dev/null 2>&1; then

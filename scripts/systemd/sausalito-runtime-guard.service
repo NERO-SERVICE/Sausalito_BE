@@ -1,0 +1,14 @@
+[Unit]
+Description=Sausalito runtime guard (health check + self-heal)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sausalito_be
+Environment=RUNTIME_GUARD_HEALTH_URL=http://127.0.0.1/healthz
+Environment=RUNTIME_GUARD_HEALTH_TIMEOUT=5
+Environment=RUNTIME_GUARD_RECOVERY_WAIT_SECONDS=8
+ExecStart=/opt/sausalito_be/scripts/maintenance/runtime_guard.sh
+StandardOutput=journal
+StandardError=journal
