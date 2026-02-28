@@ -207,6 +207,9 @@ if USE_S3_MEDIA:
     AWS_S3_ADDRESSING_STYLE = env("AWS_S3_ADDRESSING_STYLE", "auto")
     AWS_QUERYSTRING_AUTH = env_bool("AWS_QUERYSTRING_AUTH", False)
     AWS_S3_MEDIA_PREFIX = env("AWS_S3_MEDIA_PREFIX", "media").strip("/")
+    AWS_S3_MEDIA_CACHE_CONTROL = env(
+        "AWS_S3_MEDIA_CACHE_CONTROL", "public, max-age=31536000, immutable"
+    ).strip()
     AWS_DEFAULT_ACL = None
     AWS_S3_FILE_OVERWRITE = False
 
@@ -223,11 +226,16 @@ if USE_S3_MEDIA:
             f"{AWS_S3_MEDIA_PREFIX}/"
         )
 
+    _s3_object_parameters = {}
+    if AWS_S3_MEDIA_CACHE_CONTROL:
+        _s3_object_parameters["CacheControl"] = AWS_S3_MEDIA_CACHE_CONTROL
+
     STORAGES = {
         "default": {
             "BACKEND": "storages.backends.s3.S3Storage",
             "OPTIONS": {
                 "location": AWS_S3_MEDIA_PREFIX,
+                "object_parameters": _s3_object_parameters,
             },
         },
         "staticfiles": {
