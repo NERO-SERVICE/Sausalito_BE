@@ -115,6 +115,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-push
     environment: production
+    env:
+      DEPLOY_SSH_AUTO_SYNC: ${{ secrets.DEPLOY_SSH_AUTO_SYNC }}
     steps:
       - name: Validate required deploy secrets
         env:
@@ -190,17 +192,17 @@ jobs:
           fi
 
       - name: Auth to GCP (SSH key sync)
-        if: ${{ secrets.DEPLOY_SSH_AUTO_SYNC == 'true' }}
+        if: ${{ env.DEPLOY_SSH_AUTO_SYNC == 'true' }}
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
 
       - name: Setup gcloud (SSH key sync)
-        if: ${{ secrets.DEPLOY_SSH_AUTO_SYNC == 'true' }}
+        if: ${{ env.DEPLOY_SSH_AUTO_SYNC == 'true' }}
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Sync deploy public key to VM metadata
-        if: ${{ secrets.DEPLOY_SSH_AUTO_SYNC == 'true' }}
+        if: ${{ env.DEPLOY_SSH_AUTO_SYNC == 'true' }}
         env:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_SSH_PUBLIC_KEY: ${{ secrets.DEPLOY_SSH_PUBLIC_KEY }}
