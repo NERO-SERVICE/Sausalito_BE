@@ -91,7 +91,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ env.GHCR_DEPLOY_USERNAME }}
-          password: ${{ secrets.GHCR_PUSH_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -121,14 +121,14 @@ jobs:
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           DEPLOY_SSH_KEY_RAW: ${{ secrets.DEPLOY_SSH_KEY }}
-          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           set -euo pipefail
           : "${DEPLOY_HOST:?DEPLOY_HOST is required}"
           : "${DEPLOY_USER:?DEPLOY_USER is required}"
           : "${DEPLOY_PORT:?DEPLOY_PORT is required}"
           : "${DEPLOY_PATH:?DEPLOY_PATH is required}"
-          : "${GHCR_READ_TOKEN:?GHCR_READ_TOKEN is required}"
+          : "${GHCR_TOKEN:?GHCR_TOKEN is required}"
           : "${DEPLOY_SSH_KEY_RAW:?DEPLOY_SSH_KEY is required}"
           if ! grep -q "BEGIN .*PRIVATE KEY" <<<"${DEPLOY_SSH_KEY_RAW}"; then
             echo "::error::DEPLOY_SSH_KEY must be a private key (BEGIN ... PRIVATE KEY)."
@@ -149,10 +149,10 @@ jobs:
           script: |
             set -euo pipefail
             cd ${{ secrets.DEPLOY_PATH }}
-            export GHCR_READ_TOKEN="${{ secrets.GHCR_READ_TOKEN }}"
+            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GHCR_DEPLOY_USERNAME="${{ env.GHCR_DEPLOY_USERNAME }}"
             export BACKEND_IMAGE=${{ env.IMAGE_NAME }}
             export IMAGE_TAG=${{ github.sha }}
             git pull --ff-only origin main
-            echo "${GHCR_READ_TOKEN}" | docker login ghcr.io -u "${GHCR_DEPLOY_USERNAME}" --password-stdin
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_DEPLOY_USERNAME}" --password-stdin
             ./scripts/deploy_backend.sh

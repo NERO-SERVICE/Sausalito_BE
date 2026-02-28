@@ -3,12 +3,9 @@
 배포 워크플로우(`.github/workflows/backend.yml`) 기준 필수 시크릿만 정리했습니다.
 
 ## Required
-- `GHCR_PUSH_TOKEN`
-  - 이미지 push 용 GitHub PAT
-  - 최소 권한: `write:packages`
-- `GHCR_READ_TOKEN`
-  - VM에서 이미지 pull 용 GitHub PAT
-  - 최소 권한: `read:packages`
+- `GHCR_TOKEN`
+  - GHCR push/pull 공용 GitHub PAT
+  - 최소 권한: `read:packages`, `write:packages`
 - `DEPLOY_HOST`
   - 예: `sansakorea.com` 또는 VM 고정 외부 IP
 - `DEPLOY_USER`

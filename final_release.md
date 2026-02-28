@@ -222,7 +222,7 @@ Repository -> `Settings` -> `Secrets and variables` -> `Actions`:
 - `DEPLOY_SSH_KEY`
 - `DEPLOY_PORT` (예: `22`)
 - `DEPLOY_PATH` (`/opt/sausalito_be`)
-- `GHCR_READ_TOKEN` (read:packages)
+- `GHCR_TOKEN` (read:packages, write:packages)
 
 ### 8-2. 파이프라인 동작
 - 워크플로 파일:
