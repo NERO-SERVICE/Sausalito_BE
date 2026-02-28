@@ -6,7 +6,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import Address, User
 from apps.cart.models import Cart, CartItem
-from apps.catalog.models import Product
+from apps.catalog.models import Product, ProductOption
 from apps.orders.models import Order
 
 
@@ -171,3 +171,30 @@ class OrderCreateBuyNowFlowTestCase(TestCase):
         old_default.refresh_from_db()
         self.assertTrue(old_default.is_default)
         self.assertEqual(Address.objects.filter(user=self.user, is_default=True).count(), 1)
+
+    def test_create_order_rejects_inactive_option_in_cart(self):
+        option = ProductOption.objects.create(
+            product=self.product_in_cart,
+            duration_months=1,
+            name="1개월분",
+            price=self.product_in_cart.price,
+            stock=20,
+            is_active=False,
+        )
+        cart, _ = Cart.objects.get_or_create(user=self.user)
+        CartItem.objects.create(cart=cart, product=self.product_in_cart, product_option=option, quantity=1)
+
+        response = self.client.post(
+            "/api/v1/orders",
+            {
+                "recipient": "구매자",
+                "phone": "01011112222",
+                "postal_code": "04524",
+                "road_address": "서울특별시 중구 세종대로 110",
+                "detail_address": "10층",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.data["success"])

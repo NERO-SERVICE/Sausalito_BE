@@ -569,6 +569,28 @@ def _sync_product_package_options(
             option.save(update_fields=updated_fields)
 
 
+def _sync_derived_package_option_stocks(product: Product, *, previous_stock: int) -> None:
+    current_stock = max(int(product.stock or 0), 0)
+    normalized_previous_stock = max(int(previous_stock or 0), 0)
+    if current_stock == normalized_previous_stock:
+        return
+
+    package_options = list(
+        product.options.filter(duration_months__in=PRODUCT_PACKAGE_MONTHS).order_by("duration_months", "id")
+    )
+    if len(package_options) != len(PRODUCT_PACKAGE_MONTHS):
+        return
+
+    # Only auto-sync when options looked like "derived from product stock" before update.
+    if any(int(row.stock or 0) != normalized_previous_stock for row in package_options):
+        return
+
+    for row in package_options:
+        if row.stock != current_stock:
+            row.stock = current_stock
+            row.save(update_fields=["stock"])
+
+
 class AdminDashboardAPIView(APIView):
     permission_classes = [AdminRBACPermission]
     required_permissions = {"GET": {AdminPermission.DASHBOARD_VIEW}}
@@ -2619,6 +2641,7 @@ class AdminProductDetailAPIView(APIView):
         serializer = AdminProductUpsertSerializer(data=_build_product_payload(request.data))
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+        previous_stock = int(product.stock or 0)
 
         updated_fields = ["updated_at"]
         field_names = (
@@ -2713,6 +2736,8 @@ class AdminProductDetailAPIView(APIView):
             return error_response("NO_UPDATE_FIELDS", "변경할 값이 없습니다.", status_code=status.HTTP_400_BAD_REQUEST)
 
         product.save(update_fields=list(dict.fromkeys(updated_fields)))
+        if "stock" in payload and "package_options" not in payload:
+            _sync_derived_package_option_stocks(product, previous_stock=previous_stock)
         refreshed = Product.objects.prefetch_related("badges", "images", "options").get(id=product.id)
         return success_response(
             AdminProductManageSerializer(refreshed, context={"request": request}).data,

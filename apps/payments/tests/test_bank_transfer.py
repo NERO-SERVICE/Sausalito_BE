@@ -67,20 +67,22 @@ class BankTransferPaymentFlowTestCase(TestCase):
         )
 
     def test_public_bank_transfer_account_info_is_loaded_from_server_config(self):
-        BankTransferAccountConfig.objects.create(
+        BankTransferAccountConfig.objects.update_or_create(
             singleton_key=1,
-            bank_name="신한은행",
-            bank_account_no="110-555-012345",
-            account_holder="소살리토",
-            guide_message="입금 후 관리자 확인이 완료되면 결제완료 처리됩니다.",
-            verification_notice="입금자명은 주문자명과 동일하게 입력해 주세요.",
-            cash_receipt_guide="결제완료 후 마이페이지 또는 고객센터에서 현금영수증 발급을 요청할 수 있습니다.",
-            business_name="주식회사 네로",
-            business_no="123-45-67890",
-            ecommerce_no="2026-서울마포-0001",
-            support_phone="1588-1234",
-            support_email="cs@nero.ai.kr",
-            support_hours="평일 10:00 - 18:00 / 점심 12:30 - 13:30",
+            defaults={
+                "bank_name": "신한은행",
+                "bank_account_no": "110-555-012345",
+                "account_holder": "소살리토",
+                "guide_message": "입금 후 관리자 확인이 완료되면 결제완료 처리됩니다.",
+                "verification_notice": "입금자명은 주문자명과 동일하게 입력해 주세요.",
+                "cash_receipt_guide": "결제완료 후 마이페이지 또는 고객센터에서 현금영수증 발급을 요청할 수 있습니다.",
+                "business_name": "주식회사 네로",
+                "business_no": "123-45-67890",
+                "ecommerce_no": "2026-서울마포-0001",
+                "support_phone": "1588-1234",
+                "support_email": "cs@nero.ai.kr",
+                "support_hours": "평일 10:00 - 18:00 / 점심 12:30 - 13:30",
+            },
         )
 
         response = self.client.get("/api/v1/payments/bank-transfer/account-info")
@@ -102,12 +104,25 @@ class BankTransferPaymentFlowTestCase(TestCase):
         self.assertEqual(data["support_info"]["email"], "cs@nero.ai.kr")
         self.assertEqual(data["support_info"]["hours"], "평일 10:00 - 18:00 / 점심 12:30 - 13:30")
 
+    def test_public_bank_transfer_account_info_is_auto_created_when_missing(self):
+        BankTransferAccountConfig.objects.all().delete()
+        self.assertEqual(BankTransferAccountConfig.objects.count(), 0)
+
+        response = self.client.get("/api/v1/payments/bank-transfer/account-info")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(BankTransferAccountConfig.objects.count(), 1)
+        row = BankTransferAccountConfig.objects.get(singleton_key=1)
+        self.assertEqual(response.data["data"]["bank_name"], row.bank_name)
+
     def test_bank_transfer_request_uses_server_managed_account(self):
-        BankTransferAccountConfig.objects.create(
+        BankTransferAccountConfig.objects.update_or_create(
             singleton_key=1,
-            bank_name="신한은행",
-            bank_account_no="110-555-012345",
-            account_holder="소살리토",
+            defaults={
+                "bank_name": "신한은행",
+                "bank_account_no": "110-555-012345",
+                "account_holder": "소살리토",
+            },
         )
 
         self.client.force_authenticate(user=self.customer)

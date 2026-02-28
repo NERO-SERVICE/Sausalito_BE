@@ -135,6 +135,23 @@ class CartItemCreateSerializer(serializers.Serializer):
 class CartItemUpdateSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(min_value=1, max_value=99)
 
+    def validate(self, attrs):
+        item: CartItem = self.context["item"]
+        quantity = int(attrs["quantity"])
+        product = item.product
+        option = item.product_option
+
+        if not product or not product.is_active:
+            raise serializers.ValidationError("구매할 수 없는 상품입니다.")
+        if option:
+            if not option.is_active:
+                raise serializers.ValidationError("구매할 수 없는 옵션입니다.")
+            if option.stock < quantity:
+                raise serializers.ValidationError("옵션 재고가 부족합니다.")
+        if product.stock < quantity:
+            raise serializers.ValidationError("상품 재고가 부족합니다.")
+        return attrs
+
     def save(self, **kwargs):
         item: CartItem = self.context["item"]
         item.quantity = self.validated_data["quantity"]

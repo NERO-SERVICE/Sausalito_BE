@@ -163,6 +163,8 @@ class OrderCreateSerializer(serializers.Serializer):
                 option = cart_item.product_option
                 if not product or not product.is_active:
                     raise serializers.ValidationError(f"구매할 수 없는 상품이 포함되어 있습니다. ({cart_item.id})")
+                if option and (not option.is_active or option.product_id != product.id):
+                    raise serializers.ValidationError(f"구매할 수 없는 옵션이 포함되어 있습니다. ({cart_item.id})")
                 if product.stock < cart_item.quantity:
                     raise serializers.ValidationError(f"상품 재고가 부족합니다. ({product.name})")
                 if option and option.stock < cart_item.quantity:

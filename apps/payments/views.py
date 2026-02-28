@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -81,10 +81,13 @@ def _default_bank_transfer_account_config_values() -> dict[str, str]:
 
 
 def _get_or_create_bank_transfer_account_config() -> BankTransferAccountConfig:
-    row = BankTransferAccountConfig.objects.filter(singleton_key=1).first()
-    if row:
+    defaults = _default_bank_transfer_account_config_values()
+    try:
+        row, _ = BankTransferAccountConfig.objects.get_or_create(singleton_key=1, defaults=defaults)
         return row
-    return BankTransferAccountConfig.objects.create(singleton_key=1, **_default_bank_transfer_account_config_values())
+    except IntegrityError:
+        # Parallel first-creation race fallback
+        return BankTransferAccountConfig.objects.get(singleton_key=1)
 
 
 def _build_bank_transfer_account_response(row: BankTransferAccountConfig) -> dict:

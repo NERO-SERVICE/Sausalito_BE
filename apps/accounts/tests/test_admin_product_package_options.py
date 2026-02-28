@@ -132,3 +132,93 @@ class AdminProductPackageOptionsTestCase(TestCase):
         data = response.data["data"]
         self.assertEqual(data["options_label"], "상품구성")
         self.assertEqual([row["duration_months"] for row in data["options"]], [1, 2, 3, 6])
+
+    def test_stock_only_update_syncs_derived_package_option_stock(self):
+        create_response = self.client.post(
+            "/api/v1/admin/products/manage",
+            {
+                "name": "재고 동기화 상품",
+                "price": 29000,
+                "original_price": 34000,
+                "stock": 12,
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201)
+        product_id = create_response.data["data"]["id"]
+
+        patch_response = self.client.patch(
+            f"/api/v1/admin/products/manage/{product_id}",
+            {"stock": 37},
+            format="json",
+        )
+        self.assertEqual(patch_response.status_code, 200)
+
+        stocks = list(
+            ProductOption.objects.filter(product_id=product_id, duration_months__isnull=False)
+            .order_by("duration_months")
+            .values_list("stock", flat=True)
+        )
+        self.assertEqual(stocks, [37, 37, 37, 37])
+
+    def test_stock_only_update_keeps_custom_package_option_stock(self):
+        create_response = self.client.post(
+            "/api/v1/admin/products/manage",
+            {
+                "name": "커스텀 재고 상품",
+                "price": 30000,
+                "original_price": 36000,
+                "stock": 50,
+                "package_options": [
+                    {
+                        "duration_months": 1,
+                        "name": "1개월분",
+                        "benefit_label": "제품 상세선택",
+                        "price": 30000,
+                        "stock": 50,
+                        "is_active": True,
+                    },
+                    {
+                        "duration_months": 2,
+                        "name": "2개월분 (1+1)",
+                        "benefit_label": "1+1",
+                        "price": 55200,
+                        "stock": 40,
+                        "is_active": True,
+                    },
+                    {
+                        "duration_months": 3,
+                        "name": "3개월분 (2+1)",
+                        "benefit_label": "2+1",
+                        "price": 77400,
+                        "stock": 30,
+                        "is_active": True,
+                    },
+                    {
+                        "duration_months": 6,
+                        "name": "6개월분 (4+2)",
+                        "benefit_label": "4+2",
+                        "price": 144000,
+                        "stock": 20,
+                        "is_active": True,
+                    },
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, 201)
+        product_id = create_response.data["data"]["id"]
+
+        patch_response = self.client.patch(
+            f"/api/v1/admin/products/manage/{product_id}",
+            {"stock": 99},
+            format="json",
+        )
+        self.assertEqual(patch_response.status_code, 200)
+
+        stocks = list(
+            ProductOption.objects.filter(product_id=product_id, duration_months__isnull=False)
+            .order_by("duration_months")
+            .values_list("stock", flat=True)
+        )
+        self.assertEqual(stocks, [50, 40, 30, 20])
