@@ -194,6 +194,7 @@ class KakaoCallbackAPIView(APIView):
             code=serializer.validated_data["code"],
             redirect_uri=redirect_uri,
         )
+        django_login(request, user)
 
         return success_response(
             {
